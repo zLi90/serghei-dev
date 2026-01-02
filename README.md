@@ -1,11 +1,19 @@
-# SERGHEI
+# SERGHEI (Experimental Fork)
 
-Simulation Environment for Geomorphology, Hydrodynamics and Ecohydrology in Integrated form
+**⚠️ NON-OFFICIAL EXPERIMENTAL VERSION ⚠️**
 
-[![doi](https://zenodo.org/badge/DOI/10.5281/zenodo.8159947.svg)](https://doi.org/10.5281/zenodo.8159947)
-[![BSD3 License](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
-[![doi](https://img.shields.io/badge/rsd-serghei-00a3e3.svg)](https://helmholtz.software/software/serghei)
-[![fair-software.eu](https://img.shields.io/badge/fair--software.eu-%E2%97%8F%20%20%E2%97%8F%20%20%E2%97%8F%20%20%E2%97%8F%20%20%E2%97%8B-yellow)](https://fair-software.eu)
+This is a non-official, experimental fork of SERGHEI (Simulation Environment for Geomorphology, Hydrodynamics and Ecohydrology in Integrated form) used for testing and developing experimental new algorithms and model capabilities. 
+
+**This repository is for research and development purposes only. For the official, stable version of SERGHEI, please visit the [official GitLab repository](https://gitlab.com/serghei-model/serghei).**
+
+## Experimental Features
+
+This fork includes experimental implementations of:
+- **Multi-resolution coupling** (`dxRatio`) between surface and subsurface domains
+- **Asynchronous time stepping** (`dt_ratio`) for coupled SWE-RE simulations
+- Enhanced handling of wetting and drying in multi-resolution coupling scenarios
+
+These features are under active development and testing. Use at your own risk.
 
 
 # Dependencies
@@ -18,10 +26,10 @@ parallelization
 output files
 + We use [R](https://www.r-project.org/) scripts for postprocessing (optional)
 
-Both Kokkos and PNetCDF are linked as git submodules in this project. If you are unfamiliar with submodules, you can simply clone this repo together with the submodules with the `git clone --recurse-submodules` command, e.g.,
+Both Kokkos and PNetCDF are linked as git submodules in this project. If you are unfamiliar with submodules, you can clone this repo together with the submodules using:
 
 ```
-git clone --recurse-submodules https://gitlab.com/serghei-model/serghei.git ./serghei
+git clone --recurse-submodules <repository-url> ./serghei-flex
 ```
 
 PnetCDF is often available in Linux distributions via package managers, and also as software modules in HPC systems. It is recommended to use these system wide installations, and only fall back on building the PNetCDF from source if there's no other option.
@@ -50,17 +58,15 @@ A recommended option for beginners is to include a minimal set of test cases is
 cmake -S ./ -DUSE_SYSTEM_KOKKOS=ON -DSERGHEI_ENABLE_TESTS=ON
 ```
 
-Note that when builing SERGHEI, there is no backend/architecture selection (this was done in the Kokkos build step).
+Note that when building SERGHEI, there is no backend/architecture selection (this was done in the Kokkos build step).
 
-Build options for SERGHEI are passed to CMake as usual, e.g., `-DSERGHEI_WRITE_HZ=ON`. Read the [documentation on the available build options](https://gitlab.com/serghei-model/serghei/-/wikis/CMake-build-options).
+Build options for SERGHEI are passed to CMake as usual, e.g., `-DSERGHEI_WRITE_HZ=ON`. For details on available build options, refer to the official SERGHEI documentation or the CMakeLists.txt file.
 
 An alternative option is to build Kokkos on the fly:
 ```
 cmake -S ./ -B ./build -DKokkos_ENABLE_MYBACKEND=ON -DKokkos_ARCH_MYARCH=ON
 ```
-where `MYBACKEND` should be replaced by one of the available Kokkos [backends](https://kokkos.org/kokkos-core-wiki/get-started/configuration-guide.html#device-backends), with the corresponding [Kokkos architecture keyword](https://kokkos.org/kokkos-core-wiki/get-started/configuration-guide.html#gpu-architectures) replacing `MYARCH`. This also allows to pass futher [Kokkos compile options](https://kokkos.org/kokkos-core-wiki/get-started/configuration-guide.html#cmake-keywords) to the build.
-
-**Note**: building SERGHEI only with `make` is deprecated and no longer supported. The documentation for this can be found [here](https://gitlab.com/serghei-model/serghei/-/wikis/User-Guide/Legacy-and-deprecated).
+where `MYBACKEND` should be replaced by one of the available Kokkos backends, with the corresponding Kokkos architecture keyword replacing `MYARCH`.
 
 # Running SERGHEI
 
@@ -81,33 +87,17 @@ with the partition chosen in `parameters.input`
 
 ## Examples and test cases
 
-SERGHEI ships with a few minimal tests to check that the build has been succesful. These can be bound in the `bin/tests` directory. These binaries are self documented. Try running them without arguments to get help on how to run them.
+This experimental fork may include test cases in the `bin/tests` directory. These binaries are self-documented. Try running them without arguments to get help on how to run them.
 
-For more sophisticated cases, which also illustrate the input files, take a look at the [collection of test cases](https://gitlab.com/serghei-model/serghei-tests).
-
-To run the test case located at `cases/paraboloid2`, execute SERGHEI with 
+Example test cases may be available in the `cases/` directory. To run a test case, execute SERGHEI with:
 
 ```
-$ mpirun -n 2 /path/to/serghei/bin/serghei ../cases/paraboloid2/ output/ 4
+$ mpirun -n N /path/to/serghei/bin/serghei <inputDir> <outputDir> M
 ```
 
-Depending on the architecture, this command causes different things to
-happen:
+where `N` is the number of MPI tasks, `M` is the number of threads (OpenMP) or GPUs per resource set, `inputDir` is the directory containing input files, and `outputDir` is where output files will be written.
 
-1. If the code has been compiled for CPU, this means that it would be
-2 subdomains (MPI tasks) parallelized with 4 threads per subdomain
-(OpenMP).
-2. If the code has been compiled for GPU, this means that it would be
-8 subdomains (MPI tasks). The code is run on 2 nodes, each of them
-containing 4 GPUs.
-
-Similarly, the use of `mpirun` is conditioned to the execution with
-MPI and the corresponding architecture. For example, the code can be
-run just using:
-
-```
-/path/to/serghei/bin/serghei ./cases/paraboloid2/ output/ 1
-```
+For the official test cases and examples, please refer to the [official SERGHEI repository](https://gitlab.com/serghei-model/serghei-tests).
 
 # Surface-Subsurface Coupling
 
@@ -147,19 +137,149 @@ The multi-resolution coupling algorithm involves three main operations:
 
 ### Implementation Details
 
-The implementation in `src/GwInit.h` handles initialization and grid setup:
+The implementation in `src/GwInit.h` handles initialization and grid setup. Subsurface grid dimensions are computed based on `dxRatio`:
 
-- **Domain dimensions** (lines 96-112): Subsurface grid dimensions are computed based on `dxRatio`
-- **Elevation aggregation** (lines 150-189): Surface elevation is aggregated to subsurface cells during initialization
-- **Index mapping functions** in `src/GwDomain.h` (lines 58-72): Helper functions map between surface and subsurface cell indices
+```cpp
+// Set subsurface domain dimensions based on dxRatio
+if (gdom.dxRatio == 1) {
+    // Same resolution: use existing code path
+    gdom.nx = dom.nx;
+    gdom.ny = dom.ny;
+    gdom.nx_glob = dom.nx_glob;
+    gdom.ny_glob = dom.ny_glob;
+    gdom.dx = dom.dxConst;
+    gdom.dy = dom.dxConst;
+} else {
+    // Multi-resolution: subsurface is coarser
+    gdom.nx = dom.nx / gdom.dxRatio;
+    gdom.ny = dom.ny / gdom.dxRatio;
+    gdom.nx_glob = dom.nx_glob / gdom.dxRatio;
+    gdom.ny_glob = dom.ny_glob / gdom.dxRatio;
+    gdom.dx = dom.dxConst * gdom.dxRatio;
+    gdom.dy = dom.dxConst * gdom.dxRatio;
+}
+```
 
-During time integration in `src/serghei.h`:
+Surface elevation is aggregated to subsurface cells during initialization:
 
-- **Rainfall aggregation** (lines 246-279): Rainfall rates are aggregated from fine surface grid to coarse subsurface grid
-- **Water depth aggregation** (lines 286-325): Surface water depth is aggregated before each subsurface solve
-- **Exchange flux distribution** (lines 376-392): Exchange fluxes computed on subsurface grid are distributed to surface cells
+```cpp
+// Aggregate surface elevation for subsurface cell
+real z_sum = 0.0;
+int n_valid = 0;
+if (gdom.dxRatio == 1) {
+    // Same resolution: direct mapping
+    iGlobSW = packIndicesUniformGrid(dom.ny + 2*hc, dom.nx + 2*hc, jj, ii);
+    if (!state.isnodata(iGlobSW)) {
+        z_sum = state.z(iGlobSW);
+        n_valid = 1;
+    }
+} else {
+    // Multi-resolution: aggregate over surface cells
+    int i_sw_start = (par.i_beg + ii - hc) * gdom.dxRatio;
+    int j_sw_start = (par.j_beg + jj - hc) * gdom.dxRatio;
+    int i_sw_end = i_sw_start + gdom.dxRatio;
+    int j_sw_end = j_sw_start + gdom.dxRatio;
+    
+    // Clamp to valid surface domain range and aggregate
+    for (int j_sw = j_sw_start; j_sw < j_sw_end; j_sw++) {
+        for (int i_sw = i_sw_start; i_sw < i_sw_end; i_sw++) {
+            // ... get local surface cell index and accumulate z_sum ...
+            if (!state.isnodata(iGlobSW_local)) {
+                z_sum += state.z(iGlobSW_local);
+                n_valid++;
+            }
+        }
+    }
+}
+```
 
-The exchange flux is computed in `src/GwBC.h` for the top boundary condition (direction 6) and stored in `gw.qss_gw` per subsurface cell (line 435). This flux is then distributed to surface cells in `serghei.h`.
+Helper functions in `src/GwDomain.h` map between surface and subsurface cell indices:
+
+```cpp
+// Get subsurface cell index from surface cell indices
+KOKKOS_INLINE_FUNCTION int getGwIndexFromSw(int i_sw, int j_sw, int nx_sw) const {
+    int i_gw = i_sw / dxRatio;
+    int j_gw = j_sw / dxRatio;
+    return j_gw * nx + i_gw;
+}
+
+// Get surface cell index range within a subsurface cell
+KOKKOS_INLINE_FUNCTION void getSwIndicesInGw(int i_gw, int j_gw, 
+                                              int &i_sw_start, int &j_sw_start,
+                                              int &i_sw_end, int &j_sw_end) const {
+    i_sw_start = i_gw * dxRatio;
+    j_sw_start = j_gw * dxRatio;
+    i_sw_end = (i_gw + 1) * dxRatio;
+    j_sw_end = (j_gw + 1) * dxRatio;
+}
+```
+
+During time integration in `src/serghei.h`, rainfall rates are aggregated from the fine surface grid to the coarse subsurface grid:
+
+```cpp
+if (gdom.dxRatio == 1) {
+    Kokkos::deep_copy(gdom.rainRate, ss.swss.rainRate);
+} else {
+    // Aggregate rainfall from surface to subsurface
+    Kokkos::parallel_for("aggregate_rainfall", gdom.nCell, KOKKOS_LAMBDA(int idom) {
+        int ii, jj, kk;
+        gdom.unpackIndices(idom, kk, jj, ii);
+        if (kk == 0) {  // Only aggregate for top layer
+            real rain_sum = 0.0;
+            int n_valid = 0;
+            int i_sw_start = ii * gdom.dxRatio;
+            int j_sw_start = jj * gdom.dxRatio;
+            int i_sw_end = (ii + 1) * gdom.dxRatio;
+            int j_sw_end = (jj + 1) * gdom.dxRatio;
+            
+            for (int j_sw = j_sw_start; j_sw < j_sw_end && j_sw < dom.ny; j_sw++) {
+                for (int i_sw = i_sw_start; i_sw < i_sw_end && i_sw < dom.nx; i_sw++) {
+                    int iGlobSW = dom.getIndex(j_sw * dom.nx + i_sw);
+                    if (!state.isnodata(iGlobSW)) {
+                        rain_sum += ss.swss.rainRate(iGlobSW);
+                        n_valid++;
+                    }
+                }
+            }
+            if (n_valid > 0) {
+                int iGlobGW = gdom.getHaloExtension(ii, jj, kk);
+                gdom.rainRate(iGlobGW) = rain_sum / n_valid;
+            }
+        }
+    });
+}
+```
+
+Exchange fluxes computed on the subsurface grid are distributed to surface cells:
+
+```cpp
+if (gdom.dxRatio == 1) {
+    // Same resolution: direct copy from qss_gw to qss
+    Kokkos::parallel_for("copy_qss_dx1", dom.nCell, KOKKOS_LAMBDA(int idom) {
+        if (idom >= 0 && idom < gdom.nCell) {
+            state.qss(idom) = gw.qss_gw(idom);
+        }
+    });
+} else {
+    // Distribute qss_gw to surface cells
+    Kokkos::parallel_for("distribute_qss", dom.nCell, KOKKOS_LAMBDA(int idom) {
+        int i_sw, j_sw;
+        unpackIndicesUniformGrid(idom, dom.ny, dom.nx, j_sw, i_sw);
+        int i_gw = i_sw / gdom.dxRatio;
+        int j_gw = j_sw / gdom.dxRatio;
+        int iGlobGW = j_gw * gdom.nx + i_gw;
+        
+        if (iGlobGW >= 0 && iGlobGW < gdom.nCell) {
+            // Distribute flux: qss_sw = qss_gw / (dxRatio²)
+            state.qss(idom) = gw.qss_gw(iGlobGW) / (gdom.dxRatio * gdom.dxRatio);
+        } else {
+            state.qss(idom) = 0.0;
+        }
+    });
+}
+```
+
+The exchange flux is computed in `src/GwBC.h` for the top boundary condition (direction 6) and stored in `gw.qss_gw` per subsurface cell. This flux is then distributed to surface cells as shown above.
 
 ### Justification
 
@@ -210,7 +330,97 @@ A critical challenge in multi-resolution coupling occurs when a subsurface cell 
      - Fully wetted subsurface cells (all surface cells wet)
      - Fully dry subsurface cells (all surface cells dry)
 
-The implementation in `src/serghei.h` (lines 295-324) performs the wet-cell averaging during aggregation, and `src/GwBC.h` (lines 290-302) uses this aggregated value to set boundary conditions and compute exchange fluxes. The uniform distribution back to surface cells (lines 377-392 in `serghei.h`) ensures proper mass accounting even when individual surface cells transition between wet and dry states.
+The implementation in `src/serghei.h` performs the wet-cell averaging during aggregation:
+
+```cpp
+// Aggregate surface depth: average over wet cells only
+// First initialize all cells to zero
+Kokkos::deep_copy(gw.hs, 0.0);
+// Then aggregate for top layer physical cells
+Kokkos::parallel_for("aggregate_hs", gdom.nCell, KOKKOS_LAMBDA(int idom) {
+    int ii, jj, kk;
+    gdom.unpackIndices(idom, kk, jj, ii);
+    if (kk == 0) {  // Only aggregate for top layer
+        real h_sum = 0.0;
+        int n_wet = 0;
+        int i_sw_start = ii * gdom.dxRatio;
+        int j_sw_start = jj * gdom.dxRatio;
+        int i_sw_end = (ii + 1) * gdom.dxRatio;
+        int j_sw_end = (jj + 1) * gdom.dxRatio;
+        
+        for (int j_sw = j_sw_start; j_sw < j_sw_end && j_sw < dom.ny; j_sw++) {
+            for (int i_sw = i_sw_start; i_sw < i_sw_end && i_sw < dom.nx; i_sw++) {
+                int iGlobSW = dom.getIndex(j_sw * dom.nx + i_sw);
+                real h_sw = state.h(iGlobSW);
+                if (h_sw > state.hmin && !state.isnodata(iGlobSW)) {
+                    h_sum += h_sw;
+                    n_wet++;
+                }
+            }
+        }
+        // Store aggregated value using halo extension index
+        int iGlobGW = gdom.getHaloExtension(ii, jj, kk);
+        if (n_wet > 0) {
+            gw.hs(iGlobGW) = h_sum / n_wet;
+        } else {
+            gw.hs(iGlobGW) = 0.0;
+        }
+    }
+});
+```
+
+In `src/GwBC.h`, this aggregated value is used to set boundary conditions and compute exchange fluxes:
+
+```cpp
+// Get index for hs lookup
+int iGlobGW;
+if (gdom.dxRatio == 1) {
+    iGlobGW = (jj) * gdom.nxhc + (ii);  // 2D indexing for surface field
+} else {
+    iGlobGW = iGlob;  // Multi-resolution: use halo index directly
+}
+gw.h(iGhost,1) = gw.hs(iGlobGW);
+// get sw-gw exchange type
+if (gw.h(iGhost,1) > 0.0) {
+    real q_infilt = 2.0 * ks * (gw.h(iGlob,1) - gw.h(iGhost,1)) / gdom.dz(iGlob) - ks;
+    if (-q_infilt * gdom.dt <= gw.h(iGhost,1)) {
+        swgw_type(ibc) = 1;
+    } else {
+        swgw_type(ibc) = 2;
+    }
+} else {
+    // exfiltration
+    if (gw.h(iGlob,1) > gw.h(iGhost,1) + 0.5*gdom.dz(iGlob)) {
+        swgw_type(ibc) = 1;
+    } else {
+        swgw_type(ibc) = 0;  // no flow
+    }
+}
+// Store exchange flux per subsurface cell
+if (iGlobGW >= 0 && iGlobGW < gdom.nCell) {
+    gw.qss_gw(iGlobGW) = gw.q(iGhost,2);
+}
+```
+
+The uniform distribution back to surface cells in `src/serghei.h` ensures proper mass accounting even when individual surface cells transition between wet and dry states:
+
+```cpp
+// Distribute qss_gw to surface cells
+Kokkos::parallel_for("distribute_qss", dom.nCell, KOKKOS_LAMBDA(int idom) {
+    int i_sw, j_sw;
+    unpackIndicesUniformGrid(idom, dom.ny, dom.nx, j_sw, i_sw);
+    int i_gw = i_sw / gdom.dxRatio;
+    int j_gw = j_sw / gdom.dxRatio;
+    int iGlobGW = j_gw * gdom.nx + i_gw;
+    
+    if (iGlobGW >= 0 && iGlobGW < gdom.nCell) {
+        // Distribute flux: qss_sw = qss_gw / (dxRatio²)
+        state.qss(idom) = gw.qss_gw(iGlobGW) / (gdom.dxRatio * gdom.dxRatio);
+    } else {
+        state.qss(idom) = 0.0;
+    }
+});
+```
 
 ## Asynchronous Time Stepping (dt_ratio)
 
@@ -252,12 +462,85 @@ The asynchronous coupling algorithm operates as follows:
 
 ### Implementation Details
 
-The implementation in `src/serghei.h` handles asynchronous time stepping:
+The implementation in `src/serghei.h` handles asynchronous time stepping. During initialization, the initial subsurface time step is set based on `dt_ratio`:
 
-- **Initialization** (lines 206-221): Initial subsurface time step is set as `gdom.dt = gdom.dt_ratio * dom.dt`
-- **Time step update** (lines 494-523): After each surface step, subsurface time step is recalculated based on updated surface time step and `dt_ratio`
-- **Synchronous mode** (lines 331-341): When `dt_ratio = 1.0`, subsurface solves once per surface step, with time synchronization
-- **Asynchronous mode** (lines 342-358): When `dt_ratio > 1.0`, a while loop executes multiple subsurface steps until subsurface time catches up to surface time
+```cpp
+#if SERGHEI_SWE_RE
+// Set initial gw.dt based on dt_ratio
+// But first we need to compute initial sw.dt
+tint.computeDt(state,dom,io);
+// Use dt_ratio to set initial gw.dt
+gdom.dt = gdom.dt_ratio * dom.dt;
+if (gdom.dt > gdom.dt_max) {
+    gdom.dt = gdom.dt_max;
+}
+// If gw.dt < sw.dt, synchronize sw.dt to gw.dt
+if (gdom.dt < dom.dt) {
+    dom.dt = gdom.dt;
+}
+#endif
+```
+
+After each surface step, the subsurface time step is recalculated based on the updated surface time step and `dt_ratio`:
+
+```cpp
+#if SERGHEI_SWE_RE
+tint.computeDt(state,dom,io);
+#if SERGHEI_RE_MODEL
+// Use dt_ratio to determine coupling mode
+// Calculate what gw.dt should be based on ratio
+real gdom_dt_target = gdom.dt_ratio * dom.dt;
+// Respect dt_max as upper bound
+if (gdom_dt_target > gdom.dt_max) {
+    gdom_dt_target = gdom.dt_max;
+}
+// When gdom_dt_target >= dom.dt: use dt_ratio * dom.dt (asynchronous when dt_ratio > 1)
+// When gdom_dt_target < dom.dt: set dom.dt = gdom_dt_target (synchronize surface to subsurface)
+if (gdom_dt_target >= dom.dt) {
+    gdom.dt = gdom_dt_target;
+} else {
+    gdom.dt = gdom_dt_target;
+    dom.dt = gdom.dt;
+}
+// For synchronous coupling (dt_ratio = 1), ensure both use the same dt
+if (gdom.dt_ratio == 1.0) {
+    if (dom.dt < gdom.dt) {
+        gdom.dt = dom.dt;
+    } else {
+        dom.dt = gdom.dt;
+    }
+}
+#endif
+#endif
+```
+
+The time integration loop handles both synchronous and asynchronous modes:
+
+```cpp
+if (gdom.dt_ratio == 1.0) {
+    // Synchronous: run exactly once, ensure time sync
+    gdom.etime = dom.etime;
+    // PC scheme or Modified Picard scheme
+    if (gdom.gw_scheme == 1) {
+        gwf.pca_solve<Kokkos::DefaultExecutionSpace>(gw, gdom, gbc.gwbc, A, gsolver, ss.gwss, gmpi, gint, par);
+    } else {
+        gwf.picard_solve<Kokkos::DefaultExecutionSpace>(gw, gdom, gbc.gwbc, A, gsolver, ss.gwss, gmpi, gint, par);
+    }
+} else {
+    // Asynchronous: run while subsurface can take a full step before surface time
+    // Subsurface advances by gdom.dt (which is dt_ratio * dom.dt) per step
+    // Condition: gdom.etime + gdom.dt <= dom.etime ensures we can take a full step
+    while (gdom.etime + gdom.dt <= dom.etime) {
+        if (gdom.gw_scheme == 1) {
+            gwf.pca_solve<Kokkos::DefaultExecutionSpace>(gw, gdom, gbc.gwbc, A, gsolver, ss.gwss, gmpi, gint, par);
+        } else {
+            gwf.picard_solve<Kokkos::DefaultExecutionSpace>(gw, gdom, gbc.gwbc, A, gsolver, ss.gwss, gmpi, gint, par);
+        }
+        // Advance subsurface time after solver completes
+        gdom.etime += gdom.dt;
+    }
+}
+```
 
 The condition `gdom.etime + gdom.dt <= dom.etime` ensures that a full subsurface time step can be taken before exceeding the current surface time. This maintains temporal alignment between the two domains.
 
@@ -301,7 +584,8 @@ available.
   to `configure` and `make`. See [this github issue](https://github.com/Unidata/netcdf-fortran/issues/212).
 
 # How to cite 
-Please cite the software using the corresponding [SERGHEI Zenodo DOI](https://doi.org/10.5281/zenodo.8159947), and if necessary with the specific release DOI.
+
+**Note**: This is an experimental fork. When citing SERGHEI, please cite the official version using the corresponding [SERGHEI Zenodo DOI](https://doi.org/10.5281/zenodo.8159947), and if necessary with the specific release DOI.
 
 You can refer to the [SERGHEI-SWE paper](https://gmd.copernicus.org/articles/16/977/2023/) for the shallow water module SERGHEI-SWE.
 ```
