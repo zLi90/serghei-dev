@@ -287,6 +287,15 @@ public:
 				if (gdom.dxRatio == 1) {
 					// Same resolution: direct copy (gw.hs and state.h have same size and indexing)
 					Kokkos::deep_copy(gw.hs, state.h);
+					// Also copy to hs_fine (same resolution, so same values)
+					Kokkos::parallel_for("copy_hs_fine_dx1", dom.nCell, KOKKOS_LAMBDA(int idom) {
+						int iGlobSW_halo = dom.getIndex(idom);
+						if (!state.isnodata(iGlobSW_halo)) {
+							gw.hs_fine(idom) = state.h(iGlobSW_halo);
+						} else {
+							gw.hs_fine(idom) = 0.0;
+						}
+					});
 				} else {
 					// Aggregate surface depth: average over wet cells only
 					// First initialize all cells to zero
@@ -320,6 +329,16 @@ public:
 							} else {
 								gw.hs(iGlobGW) = 0.0;
 							}
+						}
+					});
+					
+					// Populate fine-resolution surface depth (gw.hs_fine) for fine-resolution flux computation
+					Kokkos::parallel_for("populate_hs_fine", dom.nCell, KOKKOS_LAMBDA(int idom) {
+						int iGlobSW_halo = dom.getIndex(idom);
+						if (!state.isnodata(iGlobSW_halo)) {
+							gw.hs_fine(idom) = state.h(iGlobSW_halo);
+						} else {
+							gw.hs_fine(idom) = 0.0;
 						}
 					});
 				}
@@ -374,20 +393,10 @@ public:
 							}
 						});
 					} else {
-						// Distribute qss_gw to surface cells
-						Kokkos::parallel_for("distribute_qss", dom.nCell, KOKKOS_LAMBDA(int idom) {
-							int i_sw, j_sw;
-							unpackIndicesUniformGrid(idom, dom.ny, dom.nx, j_sw, i_sw);
-							int i_gw = i_sw / gdom.dxRatio;
-							int j_gw = j_sw / gdom.dxRatio;
-							int iGlobGW = j_gw * gdom.nx + i_gw;
-							
-							if (iGlobGW >= 0 && iGlobGW < gdom.nCell) {
-								// Distribute flux: qss_sw = qss_gw / (dxRatio²)
-								state.qss(idom) = gw.qss_gw(iGlobGW) / (gdom.dxRatio * gdom.dxRatio);
-							} else {
-								state.qss(idom) = 0.0;
-							}
+						// Fine-resolution exchange: copy from gw.qss_fine (computed in GwBC.h) to state.qss
+						Kokkos::parallel_for("copy_qss_fine", dom.nCell, KOKKOS_LAMBDA(int idom) {
+							// gw.qss_fine is indexed by surface cell physical index (same as state.qss)
+							state.qss(idom) = gw.qss_fine(idom);
 						});
 					}
 					tint.computeGwExchange(state , dom);

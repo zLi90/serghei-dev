@@ -38,6 +38,7 @@ public:
     // matrix system
     realArr2 resi, coef;
     realArr qss, qss_gw, hs;  // qss: per surface cell, qss_gw: per subsurface cell (for multi-resolution)
+    realArr hs_fine, qss_fine;  // Fine-resolution surface depth and exchange flux (for dxRatio > 1)
     // source/sink flow rate
     realArr ssflow;
     //
@@ -72,6 +73,11 @@ public:
         // When dxRatio==1: uses surface cell memory (same as state.h)
         // When dxRatio>1: uses subsurface cell memory (aggregated values)
         hs = realArr("hs", (gdom.dxRatio == 1) ? gdom.nCellSwMem : gdom.nCellMem);
+        // Fine-resolution views for multi-resolution coupling (dxRatio > 1)
+        // hs_fine: individual surface cell depths (for fine-resolution flux computation)
+        // qss_fine: fine-resolution exchange fluxes (computed in GwBC.h, copied to state.qss in serghei.h)
+        hs_fine = realArr("hs_fine", gdom.nCellSw);  // Always fine resolution (surface cell count)
+        qss_fine = realArr("qss_fine", gdom.nCellSw);  // Always fine resolution (surface cell count)
     }
 
 };
