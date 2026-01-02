@@ -131,9 +131,14 @@ The multi-resolution coupling algorithm involves three main operations:
    - **Rainfall rate**: Averaged over all valid surface cells within each subsurface cell footprint
 
 3. **Data Distribution (Subsurface → Surface)**:
-   - **Exchange flux (qss)**: Distributed from subsurface cells to surface cells
-   - Flux conservation: Each subsurface cell flux `qss_gw` is distributed to `dxRatio²` surface cells
-   - Distribution formula: `qss_surf = qss_gw / dxRatio²` (ensures flux per unit area is consistent)
+   - **Exchange flux (qss)**: Computed at fine resolution (per surface cell) when `dxRatio > 1`
+   - **Fine-resolution approach** (when `dxRatio > 1`):
+     - Exchange flux is computed individually for each surface cell based on its own water depth
+     - Each surface cell exchanges with the corresponding subsurface cell (one subsurface cell serves `dxRatio²` surface cells)
+     - This approach is more accurate as it accounts for individual surface cell wet/dry states
+   - **Coarse-resolution approach** (when `dxRatio = 1`):
+     - Exchange flux is computed per cell (same resolution for both domains)
+     - Direct mapping between surface and subsurface cells
 
 ### Implementation Details
 
@@ -250,7 +255,62 @@ if (gdom.dxRatio == 1) {
 }
 ```
 
-Exchange fluxes computed on the subsurface grid are distributed to surface cells:
+Before the subsurface solve, fine-resolution surface water depths are populated in `gw.hs_fine`:
+
+```cpp
+if (gdom.dxRatio == 1) {
+    // Same resolution: direct copy
+    Kokkos::parallel_for("copy_hs_fine_dx1", dom.nCell, KOKKOS_LAMBDA(int idom) {
+        int iGlobSW_halo = dom.getIndex(idom);
+        if (!state.isnodata(iGlobSW_halo)) {
+            gw.hs_fine(idom) = state.h(iGlobSW_halo);
+        } else {
+            gw.hs_fine(idom) = 0.0;
+        }
+    });
+} else {
+    // Multi-resolution: populate fine-resolution surface depths
+    Kokkos::parallel_for("populate_hs_fine", dom.nCell, KOKKOS_LAMBDA(int idom) {
+        int iGlobSW_halo = dom.getIndex(idom);
+        if (!state.isnodata(iGlobSW_halo)) {
+            gw.hs_fine(idom) = state.h(iGlobSW_halo);
+        } else {
+            gw.hs_fine(idom) = 0.0;
+        }
+    });
+}
+```
+
+The exchange flux is computed in `src/GwBC.h` for the top boundary condition (direction 6). When `dxRatio > 1`, fine-resolution fluxes are computed per surface cell and stored in `gw.qss_fine`:
+
+```cpp
+// Fine-resolution flux computation (dxRatio > 1)
+Kokkos::parallel_for("gw_swe_fd_fine", gdom.nCellSw, KOKKOS_CLASS_LAMBDA (int idom) {
+    // idom is surface cell index (physical, without halo)
+    int i_sw, j_sw;
+    unpackIndicesUniformGrid(idom, gdom.ny_glob, gdom.nx_glob, j_sw, i_sw);
+    
+    // Get corresponding subsurface cell indices
+    int i_gw = i_sw / gdom.dxRatio;
+    int j_gw = j_sw / gdom.dxRatio;
+    int iGlobGW = j_gw * gdom.nx + i_gw;  // Subsurface cell index
+    
+    if (iGlobGW >= 0 && iGlobGW < gdom.nCell) {
+        // Get subsurface pressure head (same for all surface cells in this subsurface cell)
+        int iGlobGW_halo = gdom.getHaloExtension(ii_gw, jj_gw, kk_gw);
+        real h_subsurf = gw.h(iGlobGW_halo, 1);
+        
+        // Get surface cell water depth from gw.hs_fine (individual for each surface cell)
+        real h_surf = gw.hs_fine(idom);
+        
+        // Determine exchange type based on this surface cell's state
+        // Compute exchange flux for this surface cell
+        // Store in gw.qss_fine(idom)
+    }
+});
+```
+
+After the subsurface solve, fine-resolution exchange fluxes are copied to surface cells:
 
 ```cpp
 if (gdom.dxRatio == 1) {
@@ -261,25 +321,34 @@ if (gdom.dxRatio == 1) {
         }
     });
 } else {
-    // Distribute qss_gw to surface cells
-    Kokkos::parallel_for("distribute_qss", dom.nCell, KOKKOS_LAMBDA(int idom) {
-        int i_sw, j_sw;
-        unpackIndicesUniformGrid(idom, dom.ny, dom.nx, j_sw, i_sw);
-        int i_gw = i_sw / gdom.dxRatio;
-        int j_gw = j_sw / gdom.dxRatio;
-        int iGlobGW = j_gw * gdom.nx + i_gw;
-        
-        if (iGlobGW >= 0 && iGlobGW < gdom.nCell) {
-            // Distribute flux: qss_sw = qss_gw / (dxRatio²)
-            state.qss(idom) = gw.qss_gw(iGlobGW) / (gdom.dxRatio * gdom.dxRatio);
-        } else {
-            state.qss(idom) = 0.0;
-        }
+    // Fine-resolution exchange: copy from gw.qss_fine (computed in GwBC.h) to state.qss
+    Kokkos::parallel_for("copy_qss_fine", dom.nCell, KOKKOS_LAMBDA(int idom) {
+        // gw.qss_fine is indexed by surface cell physical index (same as state.qss)
+        state.qss(idom) = gw.qss_fine(idom);
     });
 }
 ```
 
-The exchange flux is computed in `src/GwBC.h` for the top boundary condition (direction 6) and stored in `gw.qss_gw` per subsurface cell. This flux is then distributed to surface cells as shown above.
+### Fine-Resolution Exchange Flux Computation
+
+When `dxRatio > 1`, the model uses a **fine-resolution exchange flux computation** approach that provides improved accuracy compared to the previous uniform distribution method. This approach:
+
+1. **Individual Surface Cell Exchange**: Each surface cell computes its own exchange flux based on:
+   - Its individual water depth (`gw.hs_fine[idom]`)
+   - The subsurface pressure head from the corresponding subsurface cell
+   - Its own wet/dry state
+
+2. **Benefits**:
+   - **Accurate wetting/drying**: Each surface cell's exchange is computed based on its actual state (wet or dry)
+   - **Spatial heterogeneity**: Captures variations in surface water depth within a subsurface cell footprint
+   - **Mass conservation**: The total exchange flux from all surface cells equals the net flux to/from the subsurface cell
+
+3. **Implementation**:
+   - Fine-resolution surface water depths are stored in `gw.hs_fine` (populated before subsurface solve)
+   - Fine-resolution exchange fluxes are computed in `GwBC.h` and stored in `gw.qss_fine`
+   - After subsurface solve, `gw.qss_fine` is copied directly to `state.qss`
+
+This approach is more accurate than uniform distribution because it accounts for the spatial heterogeneity of surface water depth and wet/dry states within each subsurface cell footprint.
 
 ### Justification
 
@@ -287,8 +356,9 @@ Multi-resolution coupling provides significant computational savings:
 - **Memory reduction**: Subsurface memory scales as `1/dxRatio²` for 2D horizontal grids
 - **Computational cost reduction**: Subsurface solve cost scales approximately as `1/dxRatio²` for explicit/implicit time stepping
 - **Maintains accuracy**: For many applications, subsurface flow can be adequately resolved at coarser scales, especially when soil properties vary smoothly
+- **Fine-resolution exchange**: When `dxRatio > 1`, exchange fluxes are computed at fine resolution, maintaining accuracy of surface-subsurface interaction despite coarser subsurface grid
 
-The approach maintains mass conservation through proper flux distribution: the total exchange flux from a subsurface cell equals the sum of distributed fluxes to its corresponding surface cells.
+The approach maintains mass conservation: when using fine-resolution exchange, the total exchange flux from all surface cells within a subsurface cell footprint equals the net flux to/from that subsurface cell.
 
 ### Handling Wetting and Drying in Multi-Resolution Coupling
 
@@ -315,16 +385,20 @@ A critical challenge in multi-resolution coupling occurs when a subsurface cell 
      - Whether subsurface pressure exceeds surface elevation → exfiltration
    - The computed flux represents the total exchange for the entire subsurface cell area
 
-**4. Flux Distribution to Surface Cells**:
-   - The subsurface exchange flux `qss_gw` is distributed uniformly to **all** surface cells within the subsurface cell footprint, regardless of their wet/dry state
-   - Distribution formula: `qss_surf = qss_gw / (dxRatio²)`
-   - This uniform distribution ensures mass conservation: the total flux from the subsurface cell equals the sum of distributed fluxes
-   - **Important**: Dry surface cells can receive exchange flux, which will increase their water depth and may cause them to become wet
+**4. Fine-Resolution Exchange Flux Computation** (when `dxRatio > 1`):
+   - Exchange flux is computed **individually for each surface cell** based on its own water depth and wet/dry state
+   - Each surface cell exchanges with the corresponding subsurface cell (one subsurface cell serves `dxRatio²` surface cells)
+   - The exchange type (infiltration, exfiltration, ponding, or no-flow) is determined per surface cell:
+     - Wet surface cells (`h_surf > hmin_threshold`): infiltration or ponding
+     - Dry surface cells (`h_surf ≤ hmin_threshold`): exfiltration or no-flow
+   - This fine-resolution approach is more accurate than uniform distribution because it accounts for spatial heterogeneity within the subsurface cell footprint
+   - Mass conservation: The total exchange flux from all surface cells equals the net flux to/from the subsurface cell
 
 **5. Mass Conservation and Area Representation**:
-   - **Pressure head**: Represents the wetted area (average over wet cells only)
-   - **Exchange flux**: Represents the total flux for the entire subsurface cell area
-   - **Flux distribution**: Ensures mass conservation by uniformly distributing the total flux
+   - **Pressure head** (for subsurface boundary condition): Represents the wetted area (average over wet cells only), stored in `gw.hs`
+   - **Fine-resolution surface depth**: Individual surface cell depths stored in `gw.hs_fine` (used for fine-resolution exchange computation)
+   - **Exchange flux**: Computed at fine resolution per surface cell, stored in `gw.qss_fine`, then copied to `state.qss`
+   - **Mass conservation**: The total exchange flux from all surface cells within a subsurface cell footprint equals the net flux to/from that subsurface cell
    - This approach correctly handles cases where:
      - Partially wetted subsurface cells (some surface cells wet, some dry)
      - Fully wetted subsurface cells (all surface cells wet)
@@ -402,25 +476,42 @@ if (iGlobGW >= 0 && iGlobGW < gdom.nCell) {
 }
 ```
 
-The uniform distribution back to surface cells in `src/serghei.h` ensures proper mass accounting even when individual surface cells transition between wet and dry states:
+Fine-resolution exchange fluxes are computed in `src/GwBC.h` and then copied to surface cells in `src/serghei.h`:
 
 ```cpp
-// Distribute qss_gw to surface cells
-Kokkos::parallel_for("distribute_qss", dom.nCell, KOKKOS_LAMBDA(int idom) {
+// In GwBC.h: Fine-resolution flux computation (dxRatio > 1)
+Kokkos::parallel_for("gw_swe_fd_fine", gdom.nCellSw, KOKKOS_CLASS_LAMBDA (int idom) {
+    // Get surface cell indices
     int i_sw, j_sw;
-    unpackIndicesUniformGrid(idom, dom.ny, dom.nx, j_sw, i_sw);
+    unpackIndicesUniformGrid(idom, gdom.ny_glob, gdom.nx_glob, j_sw, i_sw);
+    
+    // Get corresponding subsurface cell
     int i_gw = i_sw / gdom.dxRatio;
     int j_gw = j_sw / gdom.dxRatio;
     int iGlobGW = j_gw * gdom.nx + i_gw;
     
     if (iGlobGW >= 0 && iGlobGW < gdom.nCell) {
-        // Distribute flux: qss_sw = qss_gw / (dxRatio²)
-        state.qss(idom) = gw.qss_gw(iGlobGW) / (gdom.dxRatio * gdom.dxRatio);
-    } else {
-        state.qss(idom) = 0.0;
+        // Get subsurface pressure head (same for all surface cells in this subsurface cell)
+        real h_subsurf = gw.h(iGlobGW_halo, 1);
+        
+        // Get individual surface cell water depth
+        real h_surf = gw.hs_fine(idom);
+        
+        // Determine exchange type for this surface cell
+        // Compute exchange flux based on h_surf and h_subsurf
+        // Store in gw.qss_fine(idom)
     }
 });
+
+// In serghei.h: Copy fine-resolution fluxes to state.qss
+if (gdom.dxRatio > 1) {
+    Kokkos::parallel_for("copy_qss_fine", dom.nCell, KOKKOS_LAMBDA(int idom) {
+        state.qss(idom) = gw.qss_fine(idom);
+    });
+}
 ```
+
+This fine-resolution approach ensures proper mass accounting and accurately captures spatial heterogeneity when individual surface cells transition between wet and dry states.
 
 ## Asynchronous Time Stepping (dt_ratio)
 
