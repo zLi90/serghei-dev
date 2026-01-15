@@ -117,6 +117,7 @@ public:
     Kokkos::deep_copy(isnodata, false);
     Kokkos::deep_copy(dsw0, 0);
     Kokkos::deep_copy(dsw1, 0);
+    Kokkos::deep_copy(qss, 0);  // Initialize surface-subsurface exchange flux to zero
     #if SERGHEI_VERTICAL_VELOCITY
       Kokkos::deep_copy(w, 0);
       Kokkos::deep_copy(dZ_X, 0);

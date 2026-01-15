@@ -278,35 +278,27 @@ public:
 						});
 					}
 				}
-				// Initialize qss_gw to zero for all subsurface cells
-				Kokkos::parallel_for("init_qss_gw", gdom.nCell, KOKKOS_LAMBDA(int idom) {
-					gw.qss_gw(idom) = 0.0;
-				});
+				// NOTE: qss_gw is NOT reset to zero here to maintain temporal continuity
+				// When dt_ratio > 1, the GW solver doesn't run every surface step
+				// The qss from the last GW solve should persist until the next solve
+				// This ensures physically continuous surface-subsurface exchange
 				
 				// Aggregate surface water depth from surface to subsurface
 				if (gdom.dxRatio == 1) {
 					// Same resolution: direct copy (gw.hs and state.h have same size and indexing)
 					Kokkos::deep_copy(gw.hs, state.h);
-					// Also copy to hs_fine (same resolution, so same values)
-					Kokkos::parallel_for("copy_hs_fine_dx1", dom.nCell, KOKKOS_LAMBDA(int idom) {
-						int iGlobSW_halo = dom.getIndex(idom);
-						if (!state.isnodata(iGlobSW_halo)) {
-							gw.hs_fine(idom) = state.h(iGlobSW_halo);
-						} else {
-							gw.hs_fine(idom) = 0.0;
-						}
-					});
 				} else {
-					// Aggregate surface depth: average over wet cells only
-					// First initialize all cells to zero
+					// Multi-resolution: aggregate surface depth using AREA-WEIGHTED average
+					// This ensures the subsurface sees the correct total water volume per unit area
+					// All valid cells (wet or dry) are included in the average
+					// Dry cells contribute 0 to the sum, giving proper area-weighted average
 					Kokkos::deep_copy(gw.hs, 0.0);
-					// Then aggregate for top layer physical cells
 					Kokkos::parallel_for("aggregate_hs", gdom.nCell, KOKKOS_LAMBDA(int idom) {
 						int ii, jj, kk;
 						gdom.unpackIndices(idom, kk, jj, ii);
 						if (kk == 0) {  // Only aggregate for top layer
 							real h_sum = 0.0;
-							int n_wet = 0;
+							int n_valid = 0;  // Count ALL valid cells, not just wet cells
 							int i_sw_start = ii * gdom.dxRatio;
 							int j_sw_start = jj * gdom.dxRatio;
 							int i_sw_end = (ii + 1) * gdom.dxRatio;
@@ -315,30 +307,24 @@ public:
 							for (int j_sw = j_sw_start; j_sw < j_sw_end && j_sw < dom.ny; j_sw++) {
 								for (int i_sw = i_sw_start; i_sw < i_sw_end && i_sw < dom.nx; i_sw++) {
 									int iGlobSW = dom.getIndex(j_sw * dom.nx + i_sw);
-									real h_sw = state.h(iGlobSW);
-									if (h_sw > state.hmin && !state.isnodata(iGlobSW)) {
-										h_sum += h_sw;
-										n_wet++;
+									if (!state.isnodata(iGlobSW)) {
+										real h_sw = state.h(iGlobSW);
+										// Include all cells (wet or dry) in the average
+										// Dry cells contribute 0 to the sum
+										if (h_sw > state.hmin) {
+											h_sum += h_sw;
+										}
+										n_valid++;
 									}
 								}
 							}
-							// Store aggregated value using halo extension index
+							// Store AREA-WEIGHTED average using halo extension index
 							int iGlobGW = gdom.getHaloExtension(ii, jj, kk);
-							if (n_wet > 0) {
-								gw.hs(iGlobGW) = h_sum / n_wet;
+							if (n_valid > 0) {
+								gw.hs(iGlobGW) = h_sum / n_valid;  // Area-weighted average
 							} else {
 								gw.hs(iGlobGW) = 0.0;
 							}
-						}
-					});
-					
-					// Populate fine-resolution surface depth (gw.hs_fine) for fine-resolution flux computation
-					Kokkos::parallel_for("populate_hs_fine", dom.nCell, KOKKOS_LAMBDA(int idom) {
-						int iGlobSW_halo = dom.getIndex(idom);
-						if (!state.isnodata(iGlobSW_halo)) {
-							gw.hs_fine(idom) = state.h(iGlobSW_halo);
-						} else {
-							gw.hs_fine(idom) = 0.0;
 						}
 					});
 				}
@@ -393,10 +379,72 @@ public:
 							}
 						});
 					} else {
-						// Fine-resolution exchange: copy from gw.qss_fine (computed in GwBC.h) to state.qss
-						Kokkos::parallel_for("copy_qss_fine", dom.nCell, KOKKOS_LAMBDA(int idom) {
-							// gw.qss_fine is indexed by surface cell physical index (same as state.qss)
-							state.qss(idom) = gw.qss_fine(idom);
+						// Multi-resolution: distribute qss from subsurface to surface cells
+						// Key insight: 
+						// - Infiltration (qss < 0): only remove water from WET cells
+						// - Exfiltration (qss >= 0): can add water to ANY cell
+						// For infiltration, scale flux to maintain mass conservation:
+						//   qss_wet = qss_gw * (total_cells / n_wet_cells)
+						Kokkos::parallel_for("distribute_qss_wet_aware", dom.nCell, KOKKOS_LAMBDA(int idom) {
+							// Get surface cell indices (physical, without halo)
+							int i_sw = idom % dom.nx;
+							int j_sw = idom / dom.nx;
+							
+							// Get corresponding subsurface cell indices
+							int i_gw = i_sw / gdom.dxRatio;
+							int j_gw = j_sw / gdom.dxRatio;
+							int iGlobGW = j_gw * gdom.nx + i_gw;  // Subsurface cell index (without halo)
+							
+							if (iGlobGW >= 0 && iGlobGW < gdom.nCell) {
+								real qss_subsurface = gw.qss_gw(iGlobGW);
+								
+								// Check if this surface cell is wet
+								int iGlobSW_halo = dom.getIndex(idom);
+								bool is_wet = (state.h(iGlobSW_halo) > state.hmin) && !state.isnodata(iGlobSW_halo);
+								
+								if (qss_subsurface >= 0.0) {
+									// Exfiltration: apply uniformly to all cells (water can emerge anywhere)
+									state.qss(idom) = qss_subsurface;
+								} else {
+									// Infiltration: only apply to wet cells, scaled for mass conservation
+									if (is_wet) {
+										// Count wet cells in this subsurface cell footprint
+										int n_wet = 0;
+										int i_sw_start = i_gw * gdom.dxRatio;
+										int j_sw_start = j_gw * gdom.dxRatio;
+										int i_sw_end = (i_gw + 1) * gdom.dxRatio;
+										int j_sw_end = (j_gw + 1) * gdom.dxRatio;
+										int total_cells = 0;
+										
+										for (int jj = j_sw_start; jj < j_sw_end && jj < dom.ny; jj++) {
+											for (int ii = i_sw_start; ii < i_sw_end && ii < dom.nx; ii++) {
+												int idx = jj * dom.nx + ii;
+												int iGlob_check = dom.getIndex(idx);
+												if (!state.isnodata(iGlob_check)) {
+													total_cells++;
+													if (state.h(iGlob_check) > state.hmin) {
+														n_wet++;
+													}
+												}
+											}
+										}
+										
+										// Scale infiltration to maintain mass conservation
+										// Total flux = qss_gw * area_subsurface = qss_scaled * n_wet * area_surface_cell
+										// qss_scaled = qss_gw * total_cells / n_wet
+										if (n_wet > 0) {
+											state.qss(idom) = qss_subsurface * (real)total_cells / (real)n_wet;
+										} else {
+											state.qss(idom) = 0.0;  // No wet cells, no infiltration
+										}
+									} else {
+										// Dry cell: no infiltration
+										state.qss(idom) = 0.0;
+									}
+								}
+							} else {
+								state.qss(idom) = 0.0;
+							}
 						});
 					}
 					tint.computeGwExchange(state , dom);

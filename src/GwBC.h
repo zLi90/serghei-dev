@@ -409,160 +409,44 @@ public:
                 case SUB_BC_SWE:
 					#if SERGHEI_SWE_MODEL
 					if (direction == 6)	{
-						if (gdom.dxRatio == 1) {
-							// Same resolution: use coarse-resolution approach
-							Kokkos::parallel_for("gw_swe_fd", ncellsBC, KOKKOS_CLASS_LAMBDA (int ibc){
-		                        int ii, jj, kk, iGlob = bcells[ibc], iGhost = gcells[ibc], ivg = gw.soilID(iGlob) * NVG;
-		                        gdom.unpackIndicesHalo(iGlob, kk, jj, ii);
-		                        // Convert subsurface indices to surface indices for qss storage
-		                        // Note: ii, jj are subsurface halo indices, need to convert to surface
-		                        int i_gw = ii - hc;  // Remove halo offset
-		                        int j_gw = jj - hc;
-		                        int iGlobGW = j_gw * gdom.nx + i_gw;  // Subsurface cell index (without halo)
-		                        real wcs = gw.vgTable(ivg+2);
-	                            if (gdom.isnodata(iGlob) == 0)  {
-	    							if (swgw_type(ibc) == 0)    {
-	    								gw.q(iGhost,2) = 0.0;
-	    							}
-	    							else if (swgw_type(ibc) == 2)   {
-	    								gw.q(iGhost,2) = -gw.h(iGhost,1) / gdom.dt;
-	    							}
-	    							else {
-	    								gw.q(iGhost,2) = 2.0 * gw.k(iGhost,2) * (gw.h(iGlob,1) - gw.h(iGhost,1)) / gdom.dz(iGlob) - gw.k(iGhost,2);
-	    							}
-	                            }
-	                            else {gw.q(iGhost,2) = 0.0;}
-								// Store exchange flux per subsurface cell
-								if (iGlobGW >= 0 && iGlobGW < gdom.nCell) {
-									gw.qss_gw(iGlobGW) = gw.q(iGhost,2);
-								}
-		                    });
-						} else {
-							// Fine-resolution flux computation (dxRatio > 1)
-							// Compute qss_fine for each surface cell individually based on its own water depth (gw.hs_fine)
-							// gw.hs_fine contains individual surface cell depths (populated in serghei.h before subsurface solve)
-							Kokkos::parallel_for("gw_swe_fd_fine", gdom.nCellSw, KOKKOS_CLASS_LAMBDA (int idom) {
-								// idom is surface cell index (physical, without halo)
-								// Surface grid dimensions: nx_sw = gdom.nx * gdom.dxRatio, ny_sw = gdom.ny * gdom.dxRatio
-								int nx_sw = gdom.nx * gdom.dxRatio;
-								int ny_sw = gdom.ny * gdom.dxRatio;
-								int i_sw, j_sw;
-								unpackIndicesUniformGrid(idom, ny_sw, nx_sw, j_sw, i_sw);
-								
-								// Get corresponding subsurface cell indices
-								int i_gw = i_sw / gdom.dxRatio;
-								int j_gw = j_sw / gdom.dxRatio;
-								int iGlobGW = j_gw * gdom.nx + i_gw;  // Subsurface cell index (without halo)
-								
-								if (iGlobGW >= 0 && iGlobGW < gdom.nCell) {
-									// Get subsurface cell indices for accessing pressure head
-									int ii_gw, jj_gw, kk_gw = 0;  // Top layer only
-									gdom.unpackIndices(iGlobGW, kk_gw, jj_gw, ii_gw);
-									
-									// Get subsurface cell halo index to access pressure head
-									int iGlobGW_halo = gdom.getHaloExtension(ii_gw, jj_gw, kk_gw);
-									
-									// Get subsurface pressure head (same for all surface cells in this subsurface cell)
-									real h_subsurf = gw.h(iGlobGW_halo, 1);
-									
-									// Get surface cell water depth from gw.hs_fine (individual for each surface cell)
-									real h_surf = gw.hs_fine(idom);
-									
-									// Get soil properties for this subsurface cell
-									int ivg = gw.soilID(iGlobGW_halo) * NVG;
-									real ks = gw.vgTable(ivg);
-									real dz = gdom.dz(iGlobGW_halo);
-									
-									// Determine exchange type (swgw_type) for this surface cell
-									// Use a small threshold for dry cells (similar to state.hmin)
-									real hmin_threshold = 1e-6;
-									int swgw_type_local;
-									if (h_surf > hmin_threshold) {
-										// Surface cell is wet: infiltration or ponding
-										real q_infilt = 2.0 * ks * (h_subsurf - h_surf) / dz - ks;
-										if (-q_infilt * gdom.dt <= h_surf) {
-											swgw_type_local = 1;  // Normal infiltration
-										} else {
-											swgw_type_local = 2;  // Ponding
-										}
-									} else {
-										// Surface cell is dry: exfiltration or no flow
-										if (h_subsurf > h_surf + 0.5 * dz) {
-											swgw_type_local = 1;  // Exfiltration
-										} else {
-											swgw_type_local = 0;  // No flow
-										}
-									}
-									
-									// Compute exchange flux for this surface cell
-									real qss_local;
-									if (swgw_type_local == 0) {
-										qss_local = 0.0;  // No flow
-									} else if (swgw_type_local == 2) {
-										qss_local = -h_surf / gdom.dt;  // Ponding
-									} else {
-										// Normal exchange (infiltration or exfiltration)
-										// Get effective vertical conductivity following applyKBC logic for direction 6
-										real k_eff_z;
-										if (h_surf >= 0.0) {
-											// Wet surface: use saturated conductivity
-											k_eff_z = ks;
-										} else {
-											// Dry surface: use effective conductivity
-											real kr_internal = gw.k(iGlobGW_halo, 3);
-											real kr_ghost_approx = kr_internal;  // Approximate: ghost cell has similar saturation as top layer
-											k_eff_z = 0.5 * ks * (kr_internal + kr_ghost_approx);
-										}
-										// Use the same flux formula as in GwBC.h applyQBC:
-										// q = 2.0 * gw.k(iGhost,2) * (gw.h(iGlob,1) - gw.h(iGhost,1)) / gdom.dz(iGlob) - gw.k(iGhost,2)
-										qss_local = 2.0 * k_eff_z * (h_subsurf - h_surf) / dz - k_eff_z;
-									}
-									
-									// Store fine-resolution flux in gw.qss_fine
-									gw.qss_fine(idom) = qss_local;
-								} else {
-									// Outside domain
-									gw.qss_fine(idom) = 0.0;
-								}
-							});
-							
-							// Aggregate fine-resolution fluxes back to subsurface cell level for reporting/verification
-							Kokkos::parallel_for("aggregate_qss_for_verification", gdom.nCell, KOKKOS_CLASS_LAMBDA(int idom) {
-								int ii, jj, kk;
-								gdom.unpackIndices(idom, kk, jj, ii);
-								if (kk == 0) {  // Top layer only
-									real total_flux_volume = 0.0;  // Total flux volume (m³/s)
-									int i_sw_start = ii * gdom.dxRatio;
-									int j_sw_start = jj * gdom.dxRatio;
-									int i_sw_end = (ii + 1) * gdom.dxRatio;
-									int j_sw_end = (jj + 1) * gdom.dxRatio;
-									
-									// Surface domain dimensions (needed for indexing)
-									int nx_sw = gdom.nx * gdom.dxRatio;
-									int ny_sw = gdom.ny * gdom.dxRatio;
-									
-									for (int j_sw = j_sw_start; j_sw < j_sw_end && j_sw < ny_sw; j_sw++) {
-										for (int i_sw = i_sw_start; i_sw < i_sw_end && i_sw < nx_sw; i_sw++) {
-											// Get surface cell physical index
-											int idom_sw = j_sw * nx_sw + i_sw;
-											if (idom_sw >= 0 && idom_sw < gdom.nCellSw) {
-												real area_surf = gdom.dx / gdom.dxRatio * gdom.dy / gdom.dxRatio;  // Surface cell area
-												total_flux_volume += gw.qss_fine(idom_sw) * area_surf;
-											}
-										}
-									}
-									
-									// Store aggregated flux per unit area for reporting/comparison
-									real area_sub = gdom.dx * gdom.dy;
-									gw.qss_gw(idom) = total_flux_volume / area_sub;  // Flux per unit area (m/s)
-								}
-							});
-						}
+						// Coarse-resolution approach for all dxRatio values
+						// Uses area-weighted averaged surface depth (gw.hs) for physically consistent exchange
+						// The same qss is applied uniformly within each subsurface cell footprint
+						Kokkos::parallel_for("gw_swe_fd", ncellsBC, KOKKOS_CLASS_LAMBDA (int ibc){
+	                        int ii, jj, kk, iGlob = bcells[ibc], iGhost = gcells[ibc], ivg = gw.soilID(iGlob) * NVG;
+	                        gdom.unpackIndicesHalo(iGlob, kk, jj, ii);
+	                        // Convert subsurface indices to surface indices for qss storage
+	                        // Note: ii, jj are subsurface halo indices, need to convert to surface
+	                        int i_gw = ii - hc;  // Remove halo offset
+	                        int j_gw = jj - hc;
+	                        int iGlobGW = j_gw * gdom.nx + i_gw;  // Subsurface cell index (without halo)
+	                        if (gdom.isnodata(iGlob) == 0)  {
+	    						if (swgw_type(ibc) == 0)    {
+	    							gw.q(iGhost,2) = 0.0;
+	    						}
+	    						else if (swgw_type(ibc) == 2)   {
+	    							// Ponding: limit infiltration to available surface water
+	    							gw.q(iGhost,2) = -gw.h(iGhost,1) / gdom.dt;
+	    						}
+	    						else {
+	    							// Normal exchange using Darcy's law
+	    							// gw.h(iGhost,1) = area-weighted averaged surface depth (set in applyHBC)
+	    							// gw.h(iGlob,1) = subsurface pressure head at top layer
+	    							gw.q(iGhost,2) = 2.0 * gw.k(iGhost,2) * (gw.h(iGlob,1) - gw.h(iGhost,1)) / gdom.dz(iGlob) - gw.k(iGhost,2);
+	    						}
+	                        }
+	                        else {gw.q(iGhost,2) = 0.0;}
+							// Store exchange flux per subsurface cell
+							if (iGlobGW >= 0 && iGlobGW < gdom.nCell) {
+								gw.qss_gw(iGlobGW) = gw.q(iGhost,2);
+							}
+	                    });
 					}
 					else {
 						if (par.masterproc)	{std::cerr << RERROR "BC direction must be 6 for SW-GW exchange boundary! " << "\n";}
 					}
 					#endif
+					break;
                 case SUB_BC_Q_CONST:
 					Kokkos::parallel_for("gw_bc_q_const", ncellsBC, KOKKOS_CLASS_LAMBDA (int ibc){
 						int ii, jj, kk, iGlobSW, iGlob = bcells[ibc], iGhost = gcells[ibc];

@@ -69,6 +69,10 @@ public:
 		ssflow(0) = 0.0;
         qss = realArr("qss", gdom.nCellSw);  // Exchange rate per surface cell
         qss_gw = realArr("qss_gw", gdom.nCell);  // Exchange rate per subsurface cell (for multi-resolution)
+        // Initialize qss arrays to zero at simulation start
+        // qss_gw retains values between GW solver executions for temporal continuity
+        Kokkos::deep_copy(qss, 0.0);
+        Kokkos::deep_copy(qss_gw, 0.0);
         // hs: surface water depth aggregated to subsurface cells
         // When dxRatio==1: uses surface cell memory (same as state.h)
         // When dxRatio>1: uses subsurface cell memory (aggregated values)

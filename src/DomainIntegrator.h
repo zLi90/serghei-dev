@@ -90,32 +90,92 @@ class surfaceIntegrator {
 	 	infAccum=0.0;
 	}
 
-	//sample::MassType mass;
-	Kokkos::parallel_reduce( dom.nCell , KOKKOS_LAMBDA (int iGlob, real & hSum, real &rainSum, real& infSum) {
-    	int ii = dom.getIndex(iGlob);
-		if(!state.isnodata(ii)){
-			real area = dom.cellArea();
-			real h_val = state.h(ii);
-			// Check for NaN before adding to sum
-			if(!std::isnan(h_val) && !std::isinf(h_val) && h_val >= 0.0) {
-        		hSum += h_val * area;
-			}
-			if(dom.isRain) {
-				real rain_val = ss.rainRate(ii);
-				if(!std::isnan(rain_val) && !std::isinf(rain_val)) {
-					rainSum += rain_val * area;
-				}
-			}
-			if(ss.inf.model){
-				real infrate = ss.inf.rate(ii);
-				if(!std::isnan(infrate) && !std::isinf(infrate) && infrate >= 0.0) {
-					real inffluxlocal = infrate * area;
-					infSum += inffluxlocal;
-					ss.inf.infVol(ii) += inffluxlocal * dom.dt;
-				}
+	// Copy host-side scalar values to local variables for GPU capture (by value)
+	// Plain class members like int/bool are in host memory and need to be copied
+	const int isRain_local = dom.isRain;
+	const int infModel_local = ss.inf.model;
+	const real area_local = dom.cellArea();
+	const real dt_local = dom.dt;
+	const int nx_local = dom.nx;
+
+	// Copy Kokkos Views to local variables for proper GPU capture
+	// Views are shallow copies, so this is efficient
+	realArr h_view = state.h;
+	boolArr isnodata_view = state.isnodata;
+
+	// First reduction: always compute surface volume
+	Kokkos::parallel_reduce( "integrate_surface_h", dom.nCell , KOKKOS_LAMBDA (int iGlob, real & hSum) {
+		// Compute halo-extended index (same logic as dom.getIndex)
+		int i = iGlob % nx_local;
+		int j = iGlob / nx_local;
+		int ii = (hc + j) * (nx_local + 2*hc) + hc + i;
+		
+		if(!isnodata_view(ii)){
+			real h_val = h_view(ii);
+			// Use Kokkos-compatible NaN/Inf checks (avoid std:: functions on GPU)
+			// NaN check: val != val is true only for NaN
+			bool h_valid = (h_val == h_val) && (h_val != HUGE_VAL) && (h_val != -HUGE_VAL) && (h_val >= 0.0);
+			if(h_valid) {
+        		hSum += h_val * area_local;
 			}
 		}
-    } , Kokkos::Sum<real>(surfaceVolume) , Kokkos::Sum<real>(rainFlux), Kokkos::Sum<real>(infFlux));
+    } , Kokkos::Sum<real>(surfaceVolume));
+
+	// Second reduction: rain flux (only if rain is enabled)
+	if(isRain_local) {
+		realArr rainRate_view = ss.rainRate;
+		Kokkos::parallel_reduce( "integrate_surface_rain", dom.nCell , KOKKOS_LAMBDA (int iGlob, real &rainSum) {
+			int i = iGlob % nx_local;
+			int j = iGlob / nx_local;
+			int ii = (hc + j) * (nx_local + 2*hc) + hc + i;
+			
+			if(!isnodata_view(ii)){
+				real rain_val = rainRate_view(ii);
+				bool rain_valid = (rain_val == rain_val) && (rain_val != HUGE_VAL) && (rain_val != -HUGE_VAL);
+				if(rain_valid) {
+					rainSum += rain_val * area_local;
+				}
+			}
+		} , Kokkos::Sum<real>(rainFlux));
+	}
+
+	// Third reduction and update: infiltration (only if infiltration model is enabled)
+	if(infModel_local){
+		realArr infRate_view = ss.inf.rate;
+		realArr infVol_view = ss.inf.infVol;
+		
+		Kokkos::parallel_reduce( "integrate_surface_inf", dom.nCell , KOKKOS_LAMBDA (int iGlob, real& infSum) {
+			int i = iGlob % nx_local;
+			int j = iGlob / nx_local;
+			int ii = (hc + j) * (nx_local + 2*hc) + hc + i;
+			
+			if(!isnodata_view(ii)){
+				real infrate = infRate_view(ii);
+				bool inf_valid = (infrate == infrate) && (infrate != HUGE_VAL) && (infrate != -HUGE_VAL) && (infrate >= 0.0);
+				if(inf_valid) {
+					real inffluxlocal = infrate * area_local;
+					infSum += inffluxlocal;
+				}
+			}
+		} , Kokkos::Sum<real>(infFlux));
+
+		// Separate parallel_for to update infVol (cannot write inside parallel_reduce)
+		Kokkos::parallel_for( "update_infVol", dom.nCell , KOKKOS_LAMBDA (int iGlob) {
+			int i = iGlob % nx_local;
+			int j = iGlob / nx_local;
+			int ii = (hc + j) * (nx_local + 2*hc) + hc + i;
+			
+			if(!isnodata_view(ii)){
+				real infrate = infRate_view(ii);
+				bool inf_valid = (infrate == infrate) && (infrate != HUGE_VAL) && (infrate != -HUGE_VAL) && (infrate >= 0.0);
+				if(inf_valid) {
+					real inffluxlocal = infrate * area_local;
+					infVol_view(ii) += inffluxlocal * dt_local;
+				}
+			}
+		});
+	}
+
 	rainAccum += rainFlux * dom.dt;
 	infAccum += infFlux * dom.dt;
 
