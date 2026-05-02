@@ -100,6 +100,76 @@ KOKKOS_INLINE_FUNCTION real interpolateValues(TimeSeries &ts, real const &t, int
   return(v);
 };
 
+// Wind-specific interpolation for wind.input layout:
+// column 0 -> speed, column 1 -> direction (degrees).
+// Speed uses linear interpolation; direction uses circular interpolation.
+KOKKOS_INLINE_FUNCTION real wrapDegrees360(real angle_deg){
+  real wrapped = fmod(angle_deg, 360.0);
+  if(wrapped < 0.0) wrapped += 360.0;
+  return wrapped;
+}
+
+KOKKOS_INLINE_FUNCTION void interpolateWindLinearCircular(
+  TimeSeries const &ts, real const &t, real &wind_speed, real &wind_dir_deg
+){
+  // Default safe values
+  wind_speed = 0.0;
+  wind_dir_deg = 0.0;
+
+  if(ts.np <= 0) return;
+  if(ts.np == 1){
+    wind_speed = ts.value(0);
+    wind_dir_deg = wrapDegrees360(ts.value(ts.np));
+    return;
+  }
+
+  int ii = 0;
+  int jj = 0;
+  real alpha = 0.0;
+
+  if(t <= ts.time(0)){
+    ii = 0;
+    jj = 0;
+    alpha = 0.0;
+  } else if(t >= ts.time(ts.np - 1)){
+    ii = ts.np - 1;
+    jj = ts.np - 1;
+    alpha = 0.0;
+  } else {
+    // Locate [ii, jj] such that ts.time(ii) <= t < ts.time(jj)
+    while(ii < ts.np - 1 && t >= ts.time(ii + 1)) ii++;
+    jj = ii + 1;
+    real dt = ts.time(jj) - ts.time(ii);
+    if(dt > 0.0) alpha = (t - ts.time(ii)) / dt;
+  }
+
+  // Speed interpolation (column 0)
+  real spd0 = ts.value(ii);
+  real spd1 = ts.value(jj);
+  wind_speed = spd0 + alpha * (spd1 - spd0);
+
+  // Direction interpolation (column 1, degrees) with circular treatment
+  real dir0_deg = wrapDegrees360(ts.value(ii + ts.np));
+  real dir1_deg = wrapDegrees360(ts.value(jj + ts.np));
+  real dir0_rad = dir0_deg * PI / 180.0;
+  real dir1_rad = dir1_deg * PI / 180.0;
+
+  // Vector interpolation on the unit circle to handle 0/360 wrap robustly
+  real ux = (1.0 - alpha) * cos(dir0_rad) + alpha * cos(dir1_rad);
+  real uy = (1.0 - alpha) * sin(dir0_rad) + alpha * sin(dir1_rad);
+  real mag2 = ux * ux + uy * uy;
+
+  if(mag2 > 1.0e-12){
+    wind_dir_deg = wrapDegrees360(atan2(uy, ux) * 180.0 / PI);
+  } else {
+    // Degenerate case (nearly opposite vectors): fall back to shortest-arc interpolation
+    real delta = dir1_deg - dir0_deg;
+    while(delta > 180.0) delta -= 360.0;
+    while(delta <= -180.0) delta += 360.0;
+    wind_dir_deg = wrapDegrees360(dir0_deg + alpha * delta);
+  }
+}
+
 
 
 class ConstantInfiltration{
@@ -131,11 +201,10 @@ private:
     return(infCap);
   }
 */
-  // TODO need to program GreenAmpt model
-KOKKOS_INLINE_FUNCTION  real greenAmpt (const int ii,const real ) const{
-    real infCap = 0.;
-    return(infCap);
-  }
+  // Green-Ampt infiltration capacity: f = Ks * (1 + psi * dtheta / F)
+  // where F is cumulative infiltration depth (infVol). When F is near zero
+  // (start of ponding), rate is capped at Ks * (1 + psi * dtheta / epsilon).
+  // infVol is updated in DomainIntegrator using the actual (water-limited) rate.
 
   realArr infTime;
 
@@ -238,12 +307,12 @@ public:
         }
         break;
       case INF_GREENAMPT:
-         //			capacity = &InfiltrationModel::greenAmpt;
 		 if(par.masterproc){
          	std::cerr << BDASH << "Green-Ampt infiltration capacity" << std::endl;
-            std::cerr << RERROR << "Not enabled yet" << std::endl;
+         	std::cerr << BDASH << "  Ks     = " << ks << " m/s" << std::endl;
+         	std::cerr << BDASH << "  psi    = " << psi << " m" << std::endl;
+         	std::cerr << BDASH << "  dtheta = " << dtheta << std::endl;
 		 }
-         error++;
          if(ks < 0){
 		 	if(par.masterproc){
             	std::cerr << RERROR << "Saturated hydraulic conductivity not found for Green-Ampt infiltration model" << std::endl;
@@ -294,6 +363,7 @@ public:
                         });
                         break;
                     case INF_HORTON:
+                    {
                         realArr fc = this->fc;
                         realArr f0 = this->f0;
                         realArr k = this->k;
@@ -307,8 +377,31 @@ public:
                             inf_p(ii) = fc(id) + (f0(id)-fc(id))*exp(-k(id) * t);
                         });
                         break;
-
                     }
+                    case INF_GREENAMPT:
+                    {
+                        real ks_val = this->ks;
+                        real psi_val = this->psi;
+                        real dtheta_val = this->dtheta;
+                        realArr infVol_p = this->infVol;
+                        Kokkos::parallel_for("inf_greenampt", dom.nCell, KOKKOS_LAMBDA (int iGlob)
+                        {
+                            int ii = dom.getIndex(iGlob);
+                            real F = infVol_p(ii);
+                            real infCap;
+                            if(F < 1e-10){
+                                // Ponding just started: F ≈ 0 so rate is very high.
+                                // Cap at Ks * (1 + psi*dtheta / epsilon) with epsilon = 1e-6 m.
+                                infCap = ks_val * (1.0 + psi_val * dtheta_val / 1e-6);
+                            } else {
+                                // Standard Green-Ampt: f = Ks * (1 + psi * dtheta / F)
+                                infCap = ks_val * (1.0 + psi_val * dtheta_val / F);
+                            }
+                            inf_p(ii) = infCap;
+                        });
+                        break;
+                    }
+                }
             }
     }
 };
@@ -467,16 +560,17 @@ public:
         if (dom.isWind)   {
             realArr &rr_w = windspd;
             realArr &rr_d = winddir;
-            findTimeBlock(wind, dom.etime);
             TimeSeries rwind = wind;
+            real spdValue = 0.0;
+            real dirValue = 0.0;
+            interpolateWindLinearCircular(rwind, dom.etime, spdValue, dirValue);
             Kokkos::parallel_for("wind_interpolation", dom.nCell, KOKKOS_LAMBDA (int idom){
                 int ix, iy;
                 dom.unpackIndices (idom, iy, ix);
                 int ii = dom.getHaloExtension(ix,iy);
-                real spdValue = interpolatePiecewise(rwind, dom.etime, 0);
                 rr_w(ii) = spdValue;
-                real dirValue = interpolatePiecewise(rwind, dom.etime, 1);
                 rr_d(ii) = dirValue;
+
             });
         }
     }

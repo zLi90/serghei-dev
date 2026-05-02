@@ -161,10 +161,11 @@ public :
                     real omega = (90.0 - ss.winddir(ii)) * PI/180.0;
                     real beta;
                     if (huold == 0)	{beta = omega-90.0*PI/180.0;}
-                    else {beta = omega - atan(hvold/huold);}
+                    else {beta = omega - atan2(hvold, huold);}
                     real sigmax, sigmay;
                     sigmax = coef * cos(omega) * (ss.windspd(ii) - absu*cos(beta)) * (ss.windspd(ii) - absu*cos(beta));
                     sigmay = coef * sin(omega) * (ss.windspd(ii) - absu*cos(beta)) * (ss.windspd(ii) - absu*cos(beta));
+					
                     if (huold != 0)	{mx += sigmax;}
                     if (hvold != 0) {my += sigmay;}
                 }

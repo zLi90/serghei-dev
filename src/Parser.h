@@ -133,8 +133,9 @@ public:
 		      ExternalBoundaries &ebc, Parallel &par, FileIO &io)
   {
 
-    int const Nfiles = 7;
+    int const Nfiles = 6;
     int ierr[Nfiles];
+    std::string fNames[Nfiles];
     std::string tempStr;
 
 		#if SERGHEI_INPUT_NETCDF
@@ -144,18 +145,18 @@ public:
         if(par.masterproc) std::cout << RERROR << tempStr << " not found" << std::endl;
         return 0;
       };
-      ierr[0] = 1;
+      ierr[0] = 1; fNames[0] = tempStr;
 		#else
 			tempStr = fNameIn + "dem.input";
-    	ierr[0] = readDEMFile(tempStr,dom,state,par);
+    	ierr[0] = readDEMFile(tempStr,dom,state,par); fNames[0] = tempStr;
 		#endif
 
         #if SERGHEI_SWE_MODEL
         tempStr = fNameIn + "sw.input";
-        ierr[1] = readSWFile(tempStr, dom, par, state, fNameIn, io);
+        ierr[1] = readSWFile(tempStr, dom, par, state, fNameIn, io); fNames[1] = tempStr;
 
         tempStr = fNameIn + "rainfall.input";
-        ierr[2] = readRainfallFile(tempStr, dom, ss.rain, par);
+        ierr[2] = readRainfallFile(tempStr, dom, ss.rain, par); fNames[2] = tempStr;
 
         #ifdef _DEV_RAIN_
             if (par.masterproc)
@@ -177,20 +178,20 @@ public:
         #endif
 
         tempStr = fNameIn + "extbc.input";
-        ierr[3] = readExtBCFile(tempStr, dom, ebc, par, state);
+        ierr[3] = readExtBCFile(tempStr, dom, ebc, par, state); fNames[3] = tempStr;
 
         tempStr = fNameIn + "infiltration.input";
-        ierr[4] = readInfiltrationFile(tempStr, dom, ss.inf, par);
+        ierr[4] = readInfiltrationFile(tempStr, dom, ss.inf, par); fNames[4] = tempStr;
 
         tempStr = fNameIn + "infiltrationMap.input";
-        ierr[5] = readInfiltrationMap(tempStr, dom, ss.inf, par);
-        
-        // tempStr = fNameIn + "wind.input";
-        // ierr[6] = readWindFile(tempStr, dom, ss.wind, par);
+        ierr[5] = readInfiltrationMap(tempStr, dom, ss.inf, par); fNames[5] = tempStr;
+
+        tempStr = fNameIn + "wind.input";
+        ierr[6] = readWindFile(tempStr, dom, ss.wind, par);
 
         for (int i = 0; i < Nfiles; i++){
           if (!ierr[i]){
-            if(par.masterproc) std::cerr << RERROR << "Terminating. File " << tempStr << " not found" << std::endl;
+            if(par.masterproc) std::cerr << RERROR << "Terminating. File " << fNames[i] << " not found or had errors" << std::endl;
             return 0;
           }
         }
@@ -844,7 +845,7 @@ int readInfiltrationFile(std::string fNameIn, Domain &dom, InfiltrationModel &in
   {
     std::ifstream fInStream (fNameIn);
     std::string line;
-
+    printf("Reading wind file: %s\n", fNameIn.c_str());
     if (fInStream.is_open ()){
 	     dom.isWind = 1;
 	     wind.timeIndex = 0;
