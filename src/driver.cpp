@@ -12,9 +12,9 @@ int main(int argc, char** argv) {
 
 	{
 	SERGHEI serghei;
-
-	serghei.inFolder = argv[1];
-	serghei.outFolder = argv[2];
+	
+	serghei.io.inFolder = argv[1];
+	serghei.io.outFolder = argv[2];
 
 	serghei.par.nthreads = atoi(argv[3]);
 

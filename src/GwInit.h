@@ -62,69 +62,27 @@ public:
             std::cerr << GOK << " Reading in subsurface dimensions failed." << std::endl;   return 0;
         }
         // Assumes no decomposition in the vertical direction
-        // Validate that surface domain dimensions are divisible by dxRatio
-        if (dom.nx_glob % gdom.dxRatio != 0) {
-            if (par.masterproc) {
-                std::cerr << RERROR "Surface domain nx_glob (" << dom.nx_glob 
-                          << ") must be divisible by dxRatio (" << gdom.dxRatio << ")" << std::endl;
-            }
-            exit(-1);
-        }
-        if (dom.ny_glob % gdom.dxRatio != 0) {
-            if (par.masterproc) {
-                std::cerr << RERROR "Surface domain ny_glob (" << dom.ny_glob 
-                          << ") must be divisible by dxRatio (" << gdom.dxRatio << ")" << std::endl;
-            }
-            exit(-1);
-        }
-        if (dom.nx % gdom.dxRatio != 0) {
-            if (par.masterproc) {
-                std::cerr << RERROR "Surface domain nx (" << dom.nx 
-                          << ") must be divisible by dxRatio (" << gdom.dxRatio << ")" << std::endl;
-            }
-            exit(-1);
-        }
-        if (dom.ny % gdom.dxRatio != 0) {
-            if (par.masterproc) {
-                std::cerr << RERROR "Surface domain ny (" << dom.ny 
-                          << ") must be divisible by dxRatio (" << gdom.dxRatio << ")" << std::endl;
-            }
-            exit(-1);
-        }
-        
-        // Set subsurface domain dimensions based on dxRatio
-        if (gdom.dxRatio == 1) {
-            // Same resolution: use existing code path
-            gdom.nx = dom.nx;
-            gdom.ny = dom.ny;
-            gdom.nx_glob = dom.nx_glob;
-            gdom.ny_glob = dom.ny_glob;
-            gdom.dx = dom.dxConst;
-            gdom.dy = dom.dxConst;
-        } else {
-            // Multi-resolution: subsurface is coarser
-            gdom.nx = dom.nx / gdom.dxRatio;
-            gdom.ny = dom.ny / gdom.dxRatio;
-            gdom.nx_glob = dom.nx_glob / gdom.dxRatio;
-            gdom.ny_glob = dom.ny_glob / gdom.dxRatio;
-            gdom.dx = dom.dxConst * gdom.dxRatio;
-            gdom.dy = dom.dxConst * gdom.dxRatio;
-        }
+        gdom.nx = dom.nx;
+        gdom.ny = dom.ny;
+        gdom.nx_glob = dom.nx_glob;
+        gdom.ny_glob = dom.ny_glob;
         gdom.nz = gdom.nz_glob;
-        gdom.nxhc = gdom.nx + 2*hc;
-        gdom.nyhc = gdom.ny + 2*hc;
-        gdom.nzhc = gdom.nz + 2*hc;
+        gdom.nxhc = gdom.nx + 2*gdom.hc;
+        gdom.nyhc = gdom.ny + 2*gdom.hc;
+        gdom.nzhc = gdom.nz + 2*gdom.hc;
+        gdom.dx = dom.dxConst;
+        gdom.dy = dom.dxConst;
         gdom.xll = dom.xll;
         gdom.yll = dom.yll;
         gdom.zll = 0.0;
         gdom.hmin = state.hmin;
         // allocate domain
         gdom.etime = 0.0;
-        gdom.nCell = gdom.nx * gdom.ny * gdom.nz;  // Use subsurface dimensions
+        gdom.nCell = dom.nx * dom.ny * gdom.nz;
         gdom.nCellMem = gdom.nxhc*gdom.nyhc*gdom.nzhc;
         gdom.nhalo = 2*(gdom.nxhc*gdom.nyhc + gdom.nxhc*gdom.nzhc + gdom.nyhc*gdom.nzhc);
-        gdom.nCellSw = dom.nCell;  // Surface cell count (fine resolution)
-        gdom.nCellSwMem = dom.nCellMem;  // Surface cell memory (with halo)
+        gdom.nCellSw = dom.nCell;
+        gdom.nCellSwMem = dom.nCellMem;
 		gdom.x = realArr("x", gdom.nCellMem);
 		gdom.y = realArr("y", gdom.nCellMem);
         gdom.z = realArr("z", gdom.nCellMem);
@@ -144,68 +102,19 @@ public:
         // get z and dz for interior cells
         for (iGlob = 0; iGlob < gdom.nCellMem; iGlob++) {
             gdom.unpackIndicesHalo(iGlob, kk, jj, ii);
+            iGlobSW = packIndicesUniformGrid(gdom.nyhc, gdom.nxhc, jj, ii);
 			gdom.x(iGlob) = gdom.xll + ( par.i_beg + ii + 0.5) * gdom.dx;
 			gdom.y(iGlob) = gdom.yll + gdom.ny_glob*gdom.dx - ( par.j_beg + jj + 0.5) * gdom.dx;
-            
-            // Aggregate surface elevation for subsurface cell
-            real z_sum = 0.0;
-            int n_valid = 0;
-            if (gdom.dxRatio == 1) {
-                // Same resolution: direct mapping
-                iGlobSW = packIndicesUniformGrid(dom.ny + 2*hc, dom.nx + 2*hc, jj, ii);
-                if (!state.isnodata(iGlobSW)) {
-                    z_sum = state.z(iGlobSW);
-                    n_valid = 1;
-                }
-            } else {
-                // Multi-resolution: aggregate over surface cells
-                // Convert subsurface halo indices to surface indices
-                int i_sw_start = (par.i_beg + ii - hc) * gdom.dxRatio;
-                int j_sw_start = (par.j_beg + jj - hc) * gdom.dxRatio;
-                int i_sw_end = i_sw_start + gdom.dxRatio;
-                int j_sw_end = j_sw_start + gdom.dxRatio;
-                
-                // Clamp to valid surface domain range
-                i_sw_start = max(0, i_sw_start);
-                j_sw_start = max(0, j_sw_start);
-                i_sw_end = min(dom.nx_glob, i_sw_end);
-                j_sw_end = min(dom.ny_glob, j_sw_end);
-                
-                for (int j_sw = j_sw_start; j_sw < j_sw_end; j_sw++) {
-                    for (int i_sw = i_sw_start; i_sw < i_sw_end; i_sw++) {
-                        // Get local surface cell index (accounting for MPI decomposition)
-                        int i_sw_local = i_sw - par.i_beg;
-                        int j_sw_local = j_sw - par.j_beg;
-                        if (i_sw_local >= 0 && i_sw_local < dom.nx && 
-                            j_sw_local >= 0 && j_sw_local < dom.ny) {
-                            int iGlobSW_local = packIndicesUniformGrid(dom.ny + 2*hc, dom.nx + 2*hc, j_sw_local + hc, i_sw_local + hc);
-                            if (!state.isnodata(iGlobSW_local)) {
-                                z_sum += state.z(iGlobSW_local);
-                                n_valid++;
-                            }
-                        }
-                    }
-                }
-            }
-            
             if (gdom.dz_multiplier == 1.0)  {
                 gdom.dz(iGlob) = gdom.thickH / gdom.nz_glob;
                 if (read)   {
-					gdom.depth(iGlob) = (kk-hc+0.5)*gdom.dz(iGlob);
-                    if (n_valid > 0) {
-                        gdom.z(iGlob) = (z_sum / n_valid) - (kk-hc+0.5)*gdom.dz(iGlob);
-                    } else {
-                        gdom.z(iGlob) = 0.0;  // Will be marked as nodata
-                        gdom.isnodata(iGlob) = 1;
-                    }
+					gdom.depth(iGlob) = (kk-gdom.hc+0.5)*gdom.dz(iGlob);
+                    gdom.z(iGlob) = state.z(iGlobSW) - (kk-gdom.hc+0.5)*gdom.dz(iGlob);
                 }
                 else {
-                    if (n_valid > 0) {
-                        gdom.z(iGlob) = (z_sum / n_valid) - (kk-hc+0.5)*gdom.dz(iGlob);
-                    } else {
-                        gdom.z(iGlob) = - (kk-hc+0.5)*gdom.dz(iGlob);
-                    }
-					gdom.depth(iGlob) = (kk-hc+0.5)*gdom.dz(iGlob);
+                    state.z(iGlobSW) = 0.0;
+                    gdom.z(iGlob) = - (kk-gdom.hc+0.5)*gdom.dz(iGlob);
+					gdom.depth(iGlob) = (kk-gdom.hc+0.5)*gdom.dz(iGlob);
                 }
             }
             else {
@@ -215,59 +124,19 @@ public:
                     gdom.dz(iGlob) = gdom.dz_base * mypow(gdom.dz_multiplier, kk-1);
                 }
             }
-            // no data cells: mark as nodata if no valid surface cells found
-            if (n_valid == 0)   {gdom.isnodata(iGlob) = 1;}
+            //gdom.z(iGlob) = state.z(iGlobSW) - (kk-hc+0.5)*gdom.dz(iGlob);
+            // no data cells
+            if (state.isnodata(iGlobSW) == 1)   {gdom.isnodata(iGlob) = 1;}
         }
         
         if (gdom.dz_multiplier != 1.0)  {
             for (iGlob = 0; iGlob < gdom.nCellMem; iGlob++) {
                 gdom.unpackIndicesHalo(iGlob, kk, jj, ii);
-                
-                // Aggregate surface elevation (same logic as above)
-                real z_sum = 0.0;
-                int n_valid = 0;
-                if (gdom.dxRatio == 1) {
-                    iGlobSW = packIndicesUniformGrid(dom.ny + 2*hc, dom.nx + 2*hc, jj, ii);
-                    if (!state.isnodata(iGlobSW)) {
-                        z_sum = state.z(iGlobSW);
-                        n_valid = 1;
-                    }
-                } else {
-                    int i_sw_start = (par.i_beg + ii - hc) * gdom.dxRatio;
-                    int j_sw_start = (par.j_beg + jj - hc) * gdom.dxRatio;
-                    int i_sw_end = i_sw_start + gdom.dxRatio;
-                    int j_sw_end = j_sw_start + gdom.dxRatio;
-                    
-                    i_sw_start = max(0, i_sw_start);
-                    j_sw_start = max(0, j_sw_start);
-                    i_sw_end = min(dom.nx_glob, i_sw_end);
-                    j_sw_end = min(dom.ny_glob, j_sw_end);
-                    
-                    for (int j_sw = j_sw_start; j_sw < j_sw_end; j_sw++) {
-                        for (int i_sw = i_sw_start; i_sw < i_sw_end; i_sw++) {
-                            int i_sw_local = i_sw - par.i_beg;
-                            int j_sw_local = j_sw - par.j_beg;
-                            if (i_sw_local >= 0 && i_sw_local < dom.nx && 
-                                j_sw_local >= 0 && j_sw_local < dom.ny) {
-                                int iGlobSW_local = packIndicesUniformGrid(dom.ny + 2*hc, dom.nx + 2*hc, j_sw_local + hc, i_sw_local + hc);
-                                if (!state.isnodata(iGlobSW_local)) {
-                                    z_sum += state.z(iGlobSW_local);
-                                    n_valid++;
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                if (n_valid > 0) {
-                    gdom.z(iGlob) = z_sum / n_valid;
-                } else {
-                    gdom.z(iGlob) = 0.0;
-                    gdom.isnodata(iGlob) = 1;
-                }
+                iGlobSW = packIndicesUniformGrid(gdom.nyhc, gdom.nxhc, jj, ii);
+                gdom.z(iGlob) = state.z(iGlobSW);
 				gdom.depth(iGlob) = 0.0;
                 for (int krow = 0; krow < kk-1; krow++)   {
-                    int idx = (hc+krow)*gdom.nxhc*gdom.nyhc + (hc+jj)*gdom.nxhc + ii + hc;
+                    int idx = (gdom.hc+krow)*gdom.nxhc*gdom.nyhc + (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
                     gdom.z(iGlob) -= gdom.dz(idx);
 					gdom.depth(iGlob) += gdom.dz(idx);
                 }
@@ -393,11 +262,10 @@ public:
         gdom.dz_base = -999;
         gdom.dt_init = -999;
         gdom.dt_max = -999;
-        gdom.dt_ratio = 1.0;  // Default to 1.0 (synchronous coupling)
         gdom.nSoilID = -999;
         gdom.gw_scheme = -999;
         gdom.aev = -999;
-        gdom.dxRatio = 1;  // Default to 1 (same resolution)
+        gdom.async = -999;
         std::string strAux;
         // Read in colon-separated key: value file line by line
         std::ifstream fInStream(fNameIn);
@@ -418,13 +286,12 @@ public:
                     else if ( !strcmp( "dz_base"    , pline.key.c_str() ) ) { pline.value >> gdom.dz_base; }
                     else if ( !strcmp( "dt_init"    , pline.key.c_str() ) ) { pline.value >> gdom.dt_init; }
                     else if ( !strcmp( "dt_max"    , pline.key.c_str() ) ) { pline.value >> gdom.dt_max; }
-                    else if ( !strcmp( "dt_ratio"    , pline.key.c_str() ) ) { pline.value >> gdom.dt_ratio; }
                     else if ( !strcmp( "nSoilID", pline.key.c_str()))   {pline.value >> gdom.nSoilID;}
                     else if ( !strcmp( "gw_scheme"    , pline.key.c_str() ) ) { pline.value >> gdom.gw_scheme; }
                     else if ( !strcmp( "cg_iter"    , pline.key.c_str() ) ) { pline.value >> gdom.cg_iter; }
                     else if ( !strcmp( "cg_tol"    , pline.key.c_str() ) ) { pline.value >> gdom.cg_tol; }
                     else if ( !strcmp( "aev"    , pline.key.c_str() ) ) { pline.value >> gdom.aev; }
-                    else if ( !strcmp( "dxRatio"    , pline.key.c_str() ) ) { pline.value >> gdom.dxRatio; }
+                    else if ( !strcmp( "async"    , pline.key.c_str() ) ) { pline.value >> gdom.async; }
                 }
             }
         }
@@ -441,29 +308,16 @@ public:
         if (gdom.dt_max    == -999) { if (par.masterproc) std::cerr << RERROR "key " << "dt_max" << " not set."; exit(-1); }
         if (gdom.gw_scheme    == -999) { if (par.masterproc) std::cerr << RERROR "key " << "gw_scheme" << " not set."; exit(-1); }
         if (gdom.aev    == -999) { if (par.masterproc) std::cerr << RERROR "key " << "aev" << " not set."; exit(-1); }
+        if (gdom.async    == -999) { if (par.masterproc) std::cerr << RERROR "key " << "async" << " not set."; exit(-1); }
         if (gdom.dz_multiplier > 1 && gdom.dz_base == -999) { if (par.masterproc) std::cerr << RERROR "key " << "dz_base" << " not set."; exit(-1); }
-        
-        // Validate dxRatio
-        if (gdom.dxRatio < 1) {
-            if (par.masterproc) std::cerr << RERROR "dxRatio must be >= 1. Got: " << gdom.dxRatio << std::endl;
-            exit(-1);
-        }
-        
-        // Validate dt_ratio
-        if (gdom.dt_ratio < 1.0) {
-            if (par.masterproc) std::cerr << RERROR "dt_ratio must be >= 1.0. Got: " << gdom.dt_ratio << std::endl;
-            exit(-1);
-        }
-        
       // Print out the values
         if (par.masterproc) {
             std::cerr << BDASH "Richards solver scheme  : "  << gdom.gw_scheme    << "\n";
             std::cerr << BDASH "Number of grids (nz)  : "  << gdom.nz_glob    << "\n";
             std::cerr << BDASH "Domain thickness : "  << gdom.thickH    << "\n";
             std::cerr << BDASH "Maximum dt   : "  << gdom.dt_max    << "\n";
-            std::cerr << BDASH "GW/SW dt ratio (dt_ratio) : "  << gdom.dt_ratio    << " (1.0 = synchronous, >1.0 = asynchronous)" << "\n";
 			std::cerr << BDASH "CG tolerance   : "  << gdom.cg_tol    << "\n";
-            std::cerr << BDASH "Grid resolution ratio (dxRatio) : "  << gdom.dxRatio    << "\n";
+            std::cerr << BDASH "Asynchronous SW-GW coupling   : "  << gdom.async    << "\n";
         }
         if (par.masterproc)   {std::cerr<< GOK "Subsurface parameters read\n";}
         return 1;
@@ -645,7 +499,7 @@ public:
         for (idx = 0; idx < gdom.nCell; idx++)  {
             gdom.unpackIndices(idx, kk, jj, ii);
             // global index for this rank
-            iGlob = (hc+kk)*gdom.nxhc*gdom.nyhc + (hc+jj)*gdom.nxhc + ii + hc;
+            iGlob = (gdom.hc+kk)*gdom.nxhc*gdom.nyhc + (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
             // global index for the entire domain
             ii2 = kk*gdom.nx_glob*gdom.ny_glob + (par.j_beg+jj)*(gdom.nx_glob)+par.i_beg+ii;
             gw.soilID(iGlob) = tmpVar(ii2);
@@ -1206,7 +1060,7 @@ public:
                 for (idx = 0; idx < gdom.nCell; idx++)    {
                     gdom.unpackIndices(idx, kk, jj, ii);
                     // get global index
-                    iGlob = (hc+kk)*gdom.nxhc*gdom.nyhc + (hc+jj)*gdom.nxhc + ii + hc;
+                    iGlob = (gdom.hc+kk)*gdom.nxhc*gdom.nyhc + (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
                     // get soil parameters
                     ivg = gw.soilID(iGlob) * NVG;
                     wcs = gw.vgTable(ivg+2);    wcr = gw.vgTable(ivg+3);
@@ -1294,7 +1148,7 @@ public:
             for (idx = 0; idx < gdom.nCell; idx++)    {
                 gdom.unpackIndices(idx, kk, jj, ii);
                 // get global index
-                iGlob = (hc+kk)*gdom.nxhc*gdom.nyhc + (hc+jj)*gdom.nxhc + ii + hc;
+                iGlob = (gdom.hc+kk)*gdom.nxhc*gdom.nyhc + (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
                 // get soil parameters
                 ivg = gw.soilID(iGlob) * NVG;
                 wcs = gw.vgTable(ivg+2);
@@ -1313,7 +1167,7 @@ public:
             for (idx = 0; idx < gdom.nCell; idx++)    {
                 gdom.unpackIndices(idx, kk, jj, ii);
                 // get global index
-                iGlob = (hc+kk)*gdom.nxhc*gdom.nyhc + (hc+jj)*gdom.nxhc + ii + hc;
+                iGlob = (gdom.hc+kk)*gdom.nxhc*gdom.nyhc + (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
                 // get soil parameters
                 ivg = gw.soilID(iGlob) * NVG;
                 wcs = gw.vgTable(ivg+2);
@@ -1332,7 +1186,7 @@ public:
             for (idx = 0; idx < gdom.nCell; idx++)    {
                 gdom.unpackIndices(idx, kk, jj, ii);
                 // get global index
-                iGlob = (hc+kk)*gdom.nxhc*gdom.nyhc + (hc+jj)*gdom.nxhc + ii + hc;
+                iGlob = (gdom.hc+kk)*gdom.nxhc*gdom.nyhc + (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
                 // get soil parameters
                 ivg = gw.soilID(iGlob) * NVG;
                 wcs = gw.vgTable(ivg+2);

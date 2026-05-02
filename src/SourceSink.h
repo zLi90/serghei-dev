@@ -4,77 +4,56 @@
 #include "define.h"
 #include "SArray.h"
 #include "State.h"
-
 #include "GwDomain.h"
 #include "GwState.h"
-
+#include "atmForcing.h"
 
 #define INF_NONE 0
 #define INF_CONSTANT 1
 #define INF_HORTON 2
 #define INF_GREENAMPT 3
 
+#ifndef SERGHEI_RAINFALL_POLYGONS
+  #define SERGHEI_RAINFALL_POLYGONS 0
+#endif
 
-//class State;	// forward declaration
 
-/*
-  TimeSeries provides a construct/class to store time series.
- */
-class TimeSeries{
+#if SERGHEI_RAINFALL_POLYGONS
+KOKKOS_INLINE_FUNCTION int findTimeBlockByPolygons (const realArr raintime, const int idx0, const int idx1, real const &t){
+  int ti=idx0; //current time index
 
-public:
-
-  int np;     // number of points in time
-  int nc;       // number of grid cells with different time series values
-  int nx = 1; // number of partitions in x direction
-  int ny = 1; // number of partitions in y direction
-
-  realArr time;
-  realArr value;
-  realArr2 values;
-  int timeIndex = 0;
-
-/*
-  // WARNING valid only for piece-wise constant time data
-  inline real interpolate (real const &t, int spaceIndex){
-    if(t >= time (np - 1)){
-      timeIndex = np - 1;
-    }
-    else{
-	     if (t >= time (timeIndex + 1)) timeIndex++;
-    }
-    return (value (np * spaceIndex + timeIndex));
+  if(t >= raintime(idx1)){
+    ti = idx1;
   }
-*/
-  void initialise(int n){
-    np = n;
-    time = realArr("time",np);
-    value = realArr("value",np);
-  };
+  else{
+    for(int ii=idx0; ii<idx1; ii++){
 
+      if(t>=raintime(ii) && t<raintime(ii+1)) ti=ii;
+
+    }
+  }
+
+  return(ti);
 };
+
+KOKKOS_INLINE_FUNCTION real interpolatePiecewiseByPolygons (const realArr rainvalue, int idx){
+  return (rainvalue (idx));
+};
+#endif
+
+
 
 KOKKOS_INLINE_FUNCTION void findTimeBlock (TimeSeries &ts, real const &t){
   if(t >= ts.time (ts.np - 1)){
     ts.timeIndex = ts.np - 1;
   }
   else{
-    // Increment timeIndex if we've passed the next time point
-    // Note: Time series should not have duplicate time entries for correct behavior
-    if (t >= ts.time (ts.timeIndex + 1)) ts.timeIndex++;
+	   if (t >= ts.time (ts.timeIndex + 1)) ts.timeIndex++;
   }
 };
 
 KOKKOS_INLINE_FUNCTION real interpolatePiecewise (TimeSeries const &ts, real const &t, int const spaceIndex ){
-  // Bounds checking to prevent out-of-range access
-  if(ts.timeIndex < 0 || ts.timeIndex >= ts.np) return 0.0;
-  if(spaceIndex < 0 || spaceIndex >= ts.nx * ts.ny) return 0.0;
-  int idx = ts.np * spaceIndex + ts.timeIndex;
-  if(idx < 0 || idx >= ts.np * ts.nx * ts.ny) return 0.0;
-  real val = ts.value (idx);
-  // Check for NaN
-  if(std::isnan(val) || std::isinf(val)) return 0.0;
-  return val;
+  return (ts.value (ts.np * spaceIndex + ts.timeIndex));
 };
 
 KOKKOS_INLINE_FUNCTION real interpolateLinear(TimeSeries &ts, real const &t){
@@ -100,75 +79,7 @@ KOKKOS_INLINE_FUNCTION real interpolateValues(TimeSeries &ts, real const &t, int
   return(v);
 };
 
-// Wind-specific interpolation for wind.input layout:
-// column 0 -> speed, column 1 -> direction (degrees).
-// Speed uses linear interpolation; direction uses circular interpolation.
-KOKKOS_INLINE_FUNCTION real wrapDegrees360(real angle_deg){
-  real wrapped = fmod(angle_deg, 360.0);
-  if(wrapped < 0.0) wrapped += 360.0;
-  return wrapped;
-}
 
-KOKKOS_INLINE_FUNCTION void interpolateWindLinearCircular(
-  TimeSeries const &ts, real const &t, real &wind_speed, real &wind_dir_deg
-){
-  // Default safe values
-  wind_speed = 0.0;
-  wind_dir_deg = 0.0;
-
-  if(ts.np <= 0) return;
-  if(ts.np == 1){
-    wind_speed = ts.value(0);
-    wind_dir_deg = wrapDegrees360(ts.value(ts.np));
-    return;
-  }
-
-  int ii = 0;
-  int jj = 0;
-  real alpha = 0.0;
-
-  if(t <= ts.time(0)){
-    ii = 0;
-    jj = 0;
-    alpha = 0.0;
-  } else if(t >= ts.time(ts.np - 1)){
-    ii = ts.np - 1;
-    jj = ts.np - 1;
-    alpha = 0.0;
-  } else {
-    // Locate [ii, jj] such that ts.time(ii) <= t < ts.time(jj)
-    while(ii < ts.np - 1 && t >= ts.time(ii + 1)) ii++;
-    jj = ii + 1;
-    real dt = ts.time(jj) - ts.time(ii);
-    if(dt > 0.0) alpha = (t - ts.time(ii)) / dt;
-  }
-
-  // Speed interpolation (column 0)
-  real spd0 = ts.value(ii);
-  real spd1 = ts.value(jj);
-  wind_speed = spd0 + alpha * (spd1 - spd0);
-
-  // Direction interpolation (column 1, degrees) with circular treatment
-  real dir0_deg = wrapDegrees360(ts.value(ii + ts.np));
-  real dir1_deg = wrapDegrees360(ts.value(jj + ts.np));
-  real dir0_rad = dir0_deg * PI / 180.0;
-  real dir1_rad = dir1_deg * PI / 180.0;
-
-  // Vector interpolation on the unit circle to handle 0/360 wrap robustly
-  real ux = (1.0 - alpha) * cos(dir0_rad) + alpha * cos(dir1_rad);
-  real uy = (1.0 - alpha) * sin(dir0_rad) + alpha * sin(dir1_rad);
-  real mag2 = ux * ux + uy * uy;
-
-  if(mag2 > 1.0e-12){
-    wind_dir_deg = wrapDegrees360(atan2(uy, ux) * 180.0 / PI);
-  } else {
-    // Degenerate case (nearly opposite vectors): fall back to shortest-arc interpolation
-    real delta = dir1_deg - dir0_deg;
-    while(delta > 180.0) delta -= 360.0;
-    while(delta <= -180.0) delta += 360.0;
-    wind_dir_deg = wrapDegrees360(dir0_deg + alpha * delta);
-  }
-}
 
 
 
@@ -190,6 +101,14 @@ public:
 
 
 class InfiltrationModel{
+public:
+  static constexpr int spatialNone = 0;
+  static constexpr int spatialRaster = 1;
+  static constexpr int spatialSoilMap = 2;
+  static constexpr int spatialLanduse = 3;
+  static constexpr int spatialNetCDF = 4;
+  int spatial = spatialRaster;
+  MapClass soilmap;
 
 private:
 /*
@@ -201,16 +120,17 @@ private:
     return(infCap);
   }
 */
-  // Green-Ampt infiltration capacity: f = Ks * (1 + psi * dtheta / F)
-  // where F is cumulative infiltration depth (infVol). When F is near zero
-  // (start of ponding), rate is capped at Ks * (1 + psi * dtheta / epsilon).
-  // infVol is updated in DomainIntegrator using the actual (water-limited) rate.
+  // TODO need to program GreenAmpt model
+KOKKOS_INLINE_FUNCTION  real greenAmpt (const int ii,const real ) const{
+    real infCap = 0.;
+    return(infCap);
+  }
 
   realArr infTime;
 
 public:
     int model = -999;
-    int nLabels = 0;
+    color nLabels = 0;
     realArr constCap ;
     // Horton
     realArr k;
@@ -223,17 +143,15 @@ public:
 
     real infDry = 1E-8;  // [L] threshold to consider dry for infiltration purposes
 
-    // This is not a state variable
-    // which is why it is here and not in class State.
-    // It is necessary for output
-    // and because it is a variable in the GreenAmpt model
+    // This is not a state variable which is why it is here and not in class State.
+    // It is necessary for output and because it is a variable in the GreenAmpt model
     realArr infVol; // accumulated infiltration volume
-    realArr rate;		// infiltration rate
-    intArr infLabel; // labels for heterogeneous infiltration
 
-    // this is a function pointer which allows to redirect
-    // to the specific infiltration capacity function.
-    // the goal is to avoid evaluating which model to use every time step
+    realArr rate;		    // infiltration rate, m/s
+    realArr capacity;   // prescribed infiltration capacity, m/s
+    colorArr infLabel;  // labels for heterogeneous infiltration
+
+    // this is a function pointer which allows to redirect to the specific infiltration capacity function. the goal is to avoid evaluating which model to use every time step
     // real (InfiltrationModel::*capacity)(const int ii, const real dt) const;
 
 
@@ -250,92 +168,73 @@ public:
           rate = realArr("rate",dom.nCellMem);
           infVol = realArr("infVol",dom.nCellMem);
           if(model == INF_HORTON) infTime = realArr("infTime",dom.nCellMem);
+          if(spatial == spatialRaster || spatial == spatialNetCDF) capacity = realArr("capacity",dom.nCellMem);
         }
     }
 
 
 
-  int assignModel(Parallel &par){
+  int checkModel(Parallel &par){
     int error = 0;
 
-	#if SERGHEI_DEBUG_INFILTRATION
-	std::cout << GGD << GRAY << __PRETTY_FUNCTION__ << RESET <<  "model: " << model << std::endl;
+	  #if SERGHEI_DEBUG_INFILTRATION
+	    std::cout << GGD << GRAY << __PRETTY_FUNCTION__ << RESET <<  "model: " << model << std::endl;
   	#endif
     switch(model){
       case INF_NONE:
-		 if(par.masterproc){
-                	std::cerr << BDASH << "No infiltration capacity" << std::endl;
-		 }
-         break;
+		    if(par.masterproc) std::cerr << BDASH << "No infiltration capacity" << std::endl;
+        break;
       case INF_CONSTANT:
       	// capacity = &InfiltrationModel::constant;
         if(par.masterproc) std::cerr << BDASH << "Constant infiltration capacity" << std::endl;
         for(int id=1; id<nLabels; id++){
         	if(constCap(id) < 0){
-		  		if(par.masterproc){
-             		std::cerr << RERROR << "Infiltration rate not found for constant infiltration model" << std::endl;
-		  		}
-                error++;
+		  		  if(par.masterproc) std::cerr << RERROR << "Infiltration rate not found for constant infiltration model" << std::endl;
+		        error++;
             }
         }
         break;
       case INF_HORTON:
       	// capacity = &InfiltrationModel::horton;
-		if(par.masterproc){
-        	std::cerr << BDASH << "Horton infiltration capacity" << std::endl;
-		}
+		if(par.masterproc) std::cerr << BDASH << "Horton infiltration capacity" << std::endl;
         for(int ii=0; ii<nLabels; ii++){
         	//std::cerr << ii << "\t" << k(ii) << "\t" << fc(ii) << "\t" << f0(ii) << std::endl;
-            if(k(ii) < 0){
-				if(par.masterproc){
-                	std::cerr << RERROR << "Shape factor not found for Horton infiltration model" << std::endl;
-				}
-                error++;
-            }
-            if(f0(ii) < 0){
-				if(par.masterproc){
-               		std::cerr << RERROR << "Initial infiltration capacity not found for Horton infiltration model" << std::endl;
-				}
-                error++;
-            }
-            if(fc(ii) < 0){
-				if(par.masterproc){
-        	    	std::cerr << RERROR << "Asymptotic infiltration capacity not found for Horton infiltration model" << std::endl;
-				}
-                error++;
-            }
+          if(k(ii) < 0){
+				    if(par.masterproc) std::cerr << RERROR << "Shape factor not found for Horton infiltration model" << std::endl;
+            error++;
+          }
+          if(f0(ii) < 0){
+				    if(par.masterproc) std::cerr << RERROR << "Initial infiltration capacity not found for Horton infiltration model" << std::endl;
+            error++;
+          }
+          if(fc(ii) < 0){
+        	  std::cerr << RERROR << "Asymptotic infiltration capacity not found for Horton infiltration model" << std::endl;
+            error++;
+          }
         }
         break;
       case INF_GREENAMPT:
-		 if(par.masterproc){
-         	std::cerr << BDASH << "Green-Ampt infiltration capacity" << std::endl;
-         	std::cerr << BDASH << "  Ks     = " << ks << " m/s" << std::endl;
-         	std::cerr << BDASH << "  psi    = " << psi << " m" << std::endl;
-         	std::cerr << BDASH << "  dtheta = " << dtheta << std::endl;
-		 }
-         if(ks < 0){
-		 	if(par.masterproc){
-            	std::cerr << RERROR << "Saturated hydraulic conductivity not found for Green-Ampt infiltration model" << std::endl;
-			}
-            error++;
-         }
-         if(psi < 0){
-		 	if(par.masterproc){
-          		std::cerr << RERROR << "Average suction head not found for Green-Ampt infiltration model" << std::endl;
-			}
-            error++;
-         }
-         if(dtheta < 0){
-			if(par.masterproc){
-               	std::cerr << RERROR << "Water content difference not found for Green-Ampt infiltration model" << std::endl;
-			}
+         //			capacity = &InfiltrationModel::greenAmpt;
+		    if(par.masterproc){
+          std::cerr << BDASH << "Green-Ampt infiltration capacity" << std::endl;
+          std::cerr << RERROR << "Not enabled yet" << std::endl;
+		    }
+        error++;
+        if(ks < 0){
+          std::cerr << RERROR << "Saturated hydraulic conductivity not found for Green-Ampt infiltration model" << std::endl;
+          error++;
+        }
+        if(psi < 0){
+          std::cerr << RERROR << "Average suction head not found for Green-Ampt infiltration model" << std::endl;
+          error++;
+        }
+        if(dtheta < 0){
+          std::cerr << RERROR << "Water content difference not found for Green-Ampt infiltration model" << std::endl;
          	error++;
-         }
-         break;
+        }
+        break;
       default:
-		if(par.masterproc){
-        	std::cerr << RERROR << "Error processing data in infiltration.input using infiltration model " << model << "." << std::endl;
-		}
+        std::cerr << RERROR << "Error processing data in infiltration.input using infiltration model " << model << "." << std::endl;
         error++;
         break;
       }
@@ -350,58 +249,41 @@ public:
         std::cerr << GGD << __PRETTY_FUNCTION__ << std::endl;
       #endif
         if(model){
+                /*
                 realArr &inf_p = rate;
-                intArr infLabel = this->infLabel;
+                colorArr infLabel = this->infLabel;
                 realArr constCap = this->constCap;
+                */
 
                 switch(model){
                     case INF_CONSTANT:
-                        Kokkos::parallel_for("inf_constant", dom.nCell, KOKKOS_LAMBDA (int iGlob){
+                      if(spatial == spatialNetCDF || spatial == spatialRaster){
+                        Kokkos::deep_copy(rate,capacity);
+                      }else{
+                        Kokkos::parallel_for("inf_constant", dom.nCell, KOKKOS_CLASS_LAMBDA (int iGlob){
                             int ii = dom.getIndex(iGlob);
                             int id = infLabel(ii);
-                            inf_p(ii) = constCap(id);
+                            rate(ii) = constCap(id);
                         });
-                        break;
+                      }
+                      break;
                     case INF_HORTON:
-                    {
+                    /*
                         realArr fc = this->fc;
                         realArr f0 = this->f0;
                         realArr k = this->k;
                         realArr &infTime_p = infTime;
-                        Kokkos::parallel_for("inf_horton", dom.nCell, KOKKOS_LAMBDA (int iGlob)
-                        {
-                            int ii = dom.getIndex(iGlob);
-                            int id = infLabel(ii);
-                            real t = infTime_p(ii) + dom.dt;
-                            infTime_p(ii) = t;
-                            inf_p(ii) = fc(id) + (f0(id)-fc(id))*exp(-k(id) * t);
+                    */
+                        Kokkos::parallel_for("inf_horton", dom.nCell, KOKKOS_CLASS_LAMBDA (int iGlob){
+                          int ii = dom.getIndex(iGlob);
+                          int id = infLabel(ii);
+                          real t = infTime(ii) + dom.dt;
+                          infTime(ii) = t;
+                          rate(ii) = fc(id) + (f0(id)-fc(id))*exp(-k(id) * t);
                         });
                         break;
+
                     }
-                    case INF_GREENAMPT:
-                    {
-                        real ks_val = this->ks;
-                        real psi_val = this->psi;
-                        real dtheta_val = this->dtheta;
-                        realArr infVol_p = this->infVol;
-                        Kokkos::parallel_for("inf_greenampt", dom.nCell, KOKKOS_LAMBDA (int iGlob)
-                        {
-                            int ii = dom.getIndex(iGlob);
-                            real F = infVol_p(ii);
-                            real infCap;
-                            if(F < 1e-10){
-                                // Ponding just started: F ≈ 0 so rate is very high.
-                                // Cap at Ks * (1 + psi*dtheta / epsilon) with epsilon = 1e-6 m.
-                                infCap = ks_val * (1.0 + psi_val * dtheta_val / 1e-6);
-                            } else {
-                                // Standard Green-Ampt: f = Ks * (1 + psi * dtheta / F)
-                                infCap = ks_val * (1.0 + psi_val * dtheta_val / F);
-                            }
-                            inf_p(ii) = infCap;
-                        });
-                        break;
-                    }
-                }
             }
     }
 };
@@ -410,20 +292,191 @@ public:
 class SourceSinkData{
 
 public:
-
+  #if SERGHEI_NETCDF_FORCING
+  AtmosphericForcing aforcing;
+  realArr rainAccum;
+  #endif
     TimeSeries rain, evap, wind;
     InfiltrationModel inf;
     realArr rainRate, evapRate, windspd, winddir;
 
-    void allocateSW (Domain const &dom){
-        if (dom.isRain) {rainRate  = realArr ("rainRate", dom.nCellMem);}
-        if (dom.isEvap) {evapRate  = realArr ("evapRate", dom.nCellMem);}
-        if (dom.isWind) {
-            windspd = realArr("windspd", dom.nCellMem);
-            winddir = realArr("winddir", dom.nCellMem);
+      intArr rainPol;
+
+#if SERGHEI_RAINFALL_POLYGONS
+  int nrainpol=0;
+  int nrainpoints=0;
+  std::vector<TimeSeries> rainSeries; //this can not be directly read from gpu kernels
+                                      //we store rain data in raintimedata
+
+  //store rain series in device memory
+  intArr startIdxRain; //x nrainpol
+  intArr npRain; //x nrainpol
+  intArr timeIdx; //x nrainpol
+  realArr raintime; //x nrainpoints
+  realArr rainvalue; //x nrainpoints
+#endif
+
+  void initializeSW (Domain const &dom, State const &state, Parallel const &par){
+      if(dom.isRain){
+        #if SERGHEI_NETCDF_FORCING
+          rainAccum = realArr("rainAccum",dom.nCellMem);
+        #else
+          rainRate  = realArr ("rainRate", dom.nCellMem);
+          Kokkos::deep_copy(rainRate,0.0);
+          #if SERGHEI_RAINFALL_POLYGONS
+            rainPol  = intArr ("rainPol", dom.nCellMem);
+            Kokkos::deep_copy(rainPol,-1);
+            //assign rainPol index cell-by-cell
+            for(int pp=0; pp<nrainpol; pp++){
+              TimeSeries &rain = rainSeries[pp];
+              find_raincells(dom,state,par,rain,pp);
+            }
+            //initialize rain series storage
+            startIdxRain = intArr ("startIdxRain", nrainpol);
+            npRain = intArr ("npRain", nrainpol);
+            timeIdx = intArr ("timeIdx", nrainpol);
+            Kokkos::parallel_for(nrainpol, KOKKOS_CLASS_LAMBDA(int iGlob){
+              startIdxRain(iGlob) = 0;
+              npRain(iGlob) = 0;
+              timeIdx(iGlob) = 0;
+            });
+
+            raintime = realArr("raintime",nrainpoints);
+            rainvalue = realArr("rainvalue",nrainpoints);
+            Kokkos::parallel_for(nrainpoints, KOKKOS_CLASS_LAMBDA(int iGlob){
+              raintime(iGlob) = 0.0;
+              rainvalue(iGlob) = 0.0;
+            });
+
+            //store rain series
+            int startposition=0;
+            for(int pp=0; pp<nrainpol; pp++){
+              TimeSeries &rain = rainSeries[pp];
+              store_raintime(dom,rain,startposition,pp);
+            }
+          #endif
+        #endif
+      }
+      if(dom.isEvap){evapRate  = realArr ("evapRate", dom.nCellMem);}
+        if(dom.isWind){
+          windspd = realArr("windspd", dom.nCellMem);
+          winddir = realArr("winddir", dom.nCellMem);
         }
-        if (inf.model)  {inf.allocate(dom);}
+      if (inf.model)  {inf.allocate(dom);}
     }
+
+  #if SERGHEI_RAINFALL_POLYGONS
+	inline int find_raincells(Domain const &dom, State const &state, Parallel const &par, TimeSeries &rain, int pp){
+    #if SERGHEI_DEBUG_WORKFLOW
+    std::cerr << GGD << __PRETTY_FUNCTION__ << std::endl;
+    #endif
+
+    int nPoly=rain.nver;
+    realArr &xPoly=rain.xPoly;
+    realArr &yPoly=rain.yPoly;
+
+    int count=0;
+		for(int iGlob=0; iGlob<dom.nCell; iGlob++){
+			int i,j;
+			dom.unpackIndices(iGlob,j,i);
+			int ii = dom.getHaloExtension(i,j);
+
+			if(!state.isnodata(ii)){
+        real xCoord = dom.xll + ( par.i_beg + i + 0.5) * dom.dxConst;
+        real yCoord = dom.yll + dom.ny_glob*dom.dxConst - ( par.j_beg + j + 0.5) * dom.dxConst;
+        if(geometry::isInsidePoly(nPoly,xPoly, yPoly, xCoord, yCoord)){
+          rainPol(ii)=pp;
+          count++;
+        }
+			}
+		}
+    #if SERGHEI_DEBUG_RAINFALL
+      std::cerr << GGD "Rain polygon " << pp << " contains " << count << " cells" << std::endl;
+    #endif
+    printf("Rain polygon %d contains %d cells\n",pp,count);
+
+
+    return(1);
+  }
+
+	inline int store_raintime(Domain const &dom, TimeSeries const &rain, int &startposition, int pp){
+    #if SERGHEI_DEBUG_WORKFLOW
+    std::cerr << GGD << __PRETTY_FUNCTION__ << std::endl;
+    #endif
+
+    //store start index for rain series
+    startIdxRain(pp)=startposition;
+    npRain(pp)=rain.np;
+    timeIdx(pp)=startposition;
+
+    //int count=0;
+    int idx;
+		for(int ii=0; ii<rain.np; ii++){
+      idx=startposition+ii;
+			raintime(idx) = rain.time(ii);
+      rainvalue(idx) = rain.value(ii);
+      //count++;
+		}
+
+    //next start position
+    startposition += rain.np;
+
+    return(1);
+  }
+  #endif
+
+  #if SERGHEI_RAINFALL_POLYGONS
+  inline void ComputeRainByPolygons (const State &state, const Domain &dom){
+    #if SERGHEI_DEBUG_WORKFLOW
+    std::cerr << GGD << __PRETTY_FUNCTION__ << std::endl;
+    #endif
+
+    if(dom.isRain){
+
+      //select time index for each rain series
+      Kokkos::parallel_for(nrainpol, KOKKOS_CLASS_LAMBDA(int pp){
+
+        int idx0=timeIdx(pp); //current time index
+        int idx1=startIdxRain(pp)+npRain(pp)-1;
+
+        timeIdx(pp)=findTimeBlockByPolygons(raintime,idx0,idx1,dom.etime);
+
+      });
+
+
+      Kokkos::parallel_for("rain_interpolation",dom.nCell, KOKKOS_CLASS_LAMBDA (int iGlob){
+        int ii = dom.getIndex(iGlob);
+        real Irain = 0.0;
+
+        if(!state.isnodata(ii)){
+
+          int pp=rainPol(ii);
+          if(pp>=0)
+            Irain = interpolatePiecewiseByPolygons(rainvalue, timeIdx(pp));
+
+          #if SERGHEI_DEBUG_RAINFALL
+          std::cerr << GGD "raintime " << raintime(timeIdx(pp)) << std::endl;;
+          std::cerr << GGD "rainvalue " << rainvalue(timeIdx(pp)) << std::endl;;
+          #endif
+        }
+
+        rainRate(ii) = Irain;
+      });
+
+    }
+	  #if SERGHEI_DEBUG_RAINFALL
+   		std::cerr << GGD "-----------" << std::endl;
+	  #endif
+
+  }
+  #endif
+
+
+
+
+
+
+
 
 
   inline void ComputeRain (const Domain &dom){
@@ -447,64 +500,27 @@ public:
 
 	realArr &rr_p = rainRate;
 
-  // Update time index for current simulation time on host
   findTimeBlock(rain,dom.etime);
-  
-  // Capture values needed in device kernel
-  int currentTimeIndex = rain.timeIndex;
-  real currentTime = dom.etime;
-  int rain_np = rain.np;
-  int rain_nx = rain.nx;
-  int rain_ny = rain.ny;
+  TimeSeries rrain = rain;
 
    Kokkos::parallel_for("rain_interpolation",dom.nCell, KOKKOS_LAMBDA (int iGlob){
 	    int ix;
 	    int iy;
 
-      unpackIndicesUniformGrid(iGlob, dom.ny, dom.nx, iy, ix);
-      int ii = (hc+iy)*(dom.nx+2*hc) + hc+ix;
+      dom.unpackIndices (iGlob, iy, ix);
+      int ii = dom.getHaloExtension(ix,iy);
 
 	    int _x = ix / intervalx;
 	    int _y = iy / intervaly;
 
 	    int rain_glob = _x + _y * rainx;
-	    
-	    // Clamp rain_glob to valid range
-	    int max_rain_glob = rainx * rainy - 1;
-	    if(rain_glob < 0) rain_glob = 0;
-	    if(rain_glob > max_rain_glob) rain_glob = max_rain_glob;
-	    
-	    // Find correct time index for current time
-	    int timeIdx = currentTimeIndex;
-	    if(currentTime >= rain.time(rain_np - 1)){
-	      timeIdx = rain_np - 1;
-	    } else {
-	      // Increment time index if we've passed the next time point
-	      while (timeIdx < rain_np - 1 && currentTime >= rain.time(timeIdx + 1)) {
-	        timeIdx++;
-	      }
-	    }
-	    
-	    // Calculate index into value array: np * spaceIndex + timeIndex
-	    int valueIdx = rain_np * rain_glob + timeIdx;
-	    
-	    // Bounds check
-	    if(valueIdx < 0 || valueIdx >= rain_np * rain_nx * rain_ny) {
-	      rr_p(ii) = 0.0;
-	    } else {
-	      real rainValue = rain.value(valueIdx);
-	      // Check for NaN
-	      if(std::isnan(rainValue) || std::isinf(rainValue)) {
-	        rainValue = 0.0;
-	      }
-	      if(rainValue < 0.0) {
-	        rainValue = 0.0;
-	      }
-	      rr_p(ii) = rainValue;
-	    }
+
+	    real rainValue = interpolatePiecewise(rrain, dom.etime, rain_glob);
+
+	    rr_p(ii) = rainValue;
 
 	    #if SERGHEI_DEBUG_RAINFALL
-        // Note: printf doesn't work well in device kernels, so this debug code may not execute
+        Kokkos::printf("%s[DEBUG] %s%s _x: %lf _y: %lf ix: %d iy: %d, ~> rainfall: %lf \train_glob: $lf\n",GRAY,__PRETTY_FUNCTION__,RESET,_x,_y,ix,iy,rr_p(iGlob),rain_glob);
       #endif
     });
 
@@ -538,6 +554,9 @@ public:
 	  #endif
   }
 
+
+
+
   inline void ComputeEvap (const Domain &dom){
       if(dom.isEvap){
           realArr &rr_e = evapRate;
@@ -554,39 +573,46 @@ public:
           });
       }
   }
-  
-  
+
+
     inline void ComputeWind(const Domain &dom)    {
         if (dom.isWind)   {
             realArr &rr_w = windspd;
             realArr &rr_d = winddir;
+            findTimeBlock(wind, dom.etime);
             TimeSeries rwind = wind;
-            real spdValue = 0.0;
-            real dirValue = 0.0;
-            interpolateWindLinearCircular(rwind, dom.etime, spdValue, dirValue);
             Kokkos::parallel_for("wind_interpolation", dom.nCell, KOKKOS_LAMBDA (int idom){
                 int ix, iy;
                 dom.unpackIndices (idom, iy, ix);
                 int ii = dom.getHaloExtension(ix,iy);
+                real spdValue = interpolatePiecewise(rwind, dom.etime, 0);
                 rr_w(ii) = spdValue;
+                real dirValue = interpolatePiecewise(rwind, dom.etime, 1);
                 rr_d(ii) = dirValue;
-
             });
         }
     }
-    
+
 
   inline void ComputeSWSourceSink(const State &state, const Domain &dom){
+    Kokkos::fence();
     Kokkos::Timer timer;
     #if SERGHEI_DEBUG_WORKFLOW
     std::cerr << GGD << __PRETTY_FUNCTION__ << std::endl;
     #endif
-    ComputeRain(dom);
-    ComputeEvap(dom);
-    ComputeWind(dom);
+    #if SERGHEI_RAINFALL_POLYGONS
+      ComputeRainByPolygons(state,dom);
+    #elif SERGHEI_NETCDF_FORCING
+      aforcing.computeRain(dom,state,rainRate);
+    #else
+      ComputeRain(dom);
+    #endif
+      ComputeEvap(dom);
+      ComputeWind(dom);
     inf.ComputeInfiltrationCapacity(dom);
     //no rate correction is necessary here beacuse the rate correction is done in ComputeNewState, according to the new water depth
    // timerRainInf += timer.seconds();
+   Kokkos::fence();
    dom.timers.swe.ss.raininf += timer.seconds();
  }
 
@@ -620,7 +646,7 @@ public:
     real Qinflow, Qoutflow, Cpipe;
     TimeSeries ts;
     TimeSeries evap, tran;
-	
+
 	// water stress and root distribution function
     real lai;
 	real h1, h2, h3, h4;
@@ -650,7 +676,7 @@ public:
 		for (int kk = 0; kk < gdom.nz; kk++) {
 			for (int jj = 0; jj < gdom.ny; jj++) {
 				for (int ii = 0; ii < gdom.nx; ii++) {
-					int iGlob = (hc+kk)*gdom.nxhc*gdom.nyhc + (hc+jj)*gdom.nxhc + ii + hc;
+					int iGlob = (gdom.hc+kk)*gdom.nxhc*gdom.nyhc + (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
 					foundInSubdom = -1;
 		            real xCoord = gdom.xll + ( par.i_beg + ii + 0.5) * gdom.dx;
 		            real yCoord = gdom.yll + gdom.ny_glob*gdom.dx - ( par.j_beg + jj + 0.5) * gdom.dx;
@@ -704,8 +730,8 @@ public:
 		}
 		return 1;
 	}
-	
-	// get coefficients for root water uptake declining and root distribution 
+
+	// get coefficients for root water uptake declining and root distribution
 	void rootCoef(const GwState &gw, const GwDomain &gdom)	{
 		Kokkos::parallel_for("root", ncellsIT, KOKKOS_CLASS_LAMBDA (int idx){
 			real c_wat = 1.0, c_root = 1.0, expo, x, y, z;
@@ -734,12 +760,12 @@ public:
         	if (sstype == 0)	{
         		real qt = -interpolateLinear(tran, gdom.etime);
                 real qe = -interpolateLinear(evap, gdom.etime);
-				// get root function coefficients 
+				// get root function coefficients
 				rootCoef(gw, gdom);
                 Kokkos::parallel_for("gw_et", ncellsIT, KOKKOS_CLASS_LAMBDA (int idx){
                         int ii, jj, kk, ivg, idom, iGlob = icells[idx];
                         gdom.unpackIndicesHalo(iGlob, kk, jj, ii);
-                        idom = (kk-hc)*gdom.nx*gdom.ny + (jj-hc)*gdom.nx + ii - hc;
+                        idom = (kk-gdom.hc)*gdom.nx*gdom.ny + (jj-gdom.hc)*gdom.nx + ii - gdom.hc;
                         gw.coef(idom,7) += gdom.dt * qt * coef_wat(idx) * coef_root(idx) / gdom.dz(iGlob);
                         if (kk == 1)    {
                             gw.coef(idom,7) += gdom.dt * qe / gdom.dz(iGlob);
@@ -752,7 +778,7 @@ public:
                 Kokkos::parallel_for("gw_et", ncellsIT, KOKKOS_CLASS_LAMBDA (int idx){
                         int ii, jj, kk, ivg, idom, iGlob = icells[idx];
                         gdom.unpackIndicesHalo(iGlob, kk, jj, ii);
-                        idom = (kk-hc)*gdom.nx*gdom.ny + (jj-hc)*gdom.nx + ii - hc;
+                        idom = (kk-gdom.hc)*gdom.nx*gdom.ny + (jj-gdom.hc)*gdom.nx + ii - gdom.hc;
                         gw.coef(idom,7) += gdom.dt * qbc;
                 });
             }
@@ -766,7 +792,7 @@ public:
                         int ii, jj, kk, ivg, idom, iGlob = icells[idx];
                         real flux = 0.0;
                         gdom.unpackIndicesHalo(iGlob, kk, jj, ii);
-                        idom = (kk-hc)*gdom.nx*gdom.ny + (jj-hc)*gdom.nx + ii - hc;
+                        idom = (kk-gdom.hc)*gdom.nx*gdom.ny + (jj-gdom.hc)*gdom.nx + ii - gdom.hc;
                   		// get index of cells next to the source/sink
                         int jp = idom+1, jm = idom-1, kp = idom+gdom.nx*gdom.ny, km = idom-gdom.nx*gdom.ny;
                         // treat the source/sink as a pressure boundary
@@ -785,7 +811,7 @@ public:
                 	Kokkos::parallel_for("gw_et", ncellsIT, KOKKOS_CLASS_LAMBDA (int idx){
                         int ii, jj, kk, ivg, idom, iGlob = icells[idx];
                         gdom.unpackIndicesHalo(iGlob, kk, jj, ii);
-                        idom = (kk-hc)*gdom.nx*gdom.ny + (jj-hc)*gdom.nx + ii - hc;
+                        idom = (kk-gdom.hc)*gdom.nx*gdom.ny + (jj-gdom.hc)*gdom.nx + ii - gdom.hc;
                         int ip = idom+1, im = idom-1, kp = idom+gdom.nx*gdom.ny, km = idom-gdom.nx*gdom.ny;
                         // Seepage as a fixed H condition
                         gw.coef(ip,7) -= Cpipe * gw.coef(idom,1) * hbc;
@@ -804,7 +830,7 @@ public:
                         int ii, jj, kk, ivg, idom, iGlob = icells[idx];
                         real flux = 0.0;
                         gdom.unpackIndicesHalo(iGlob, kk, jj, ii);
-                        idom = (kk-hc)*gdom.nx*gdom.ny + (jj-hc)*gdom.nx + ii - hc;
+                        idom = (kk-gdom.hc)*gdom.nx*gdom.ny + (jj-gdom.hc)*gdom.nx + ii - gdom.hc;
                         // get index of cells next to the source/sink
                         int ip = idom+1, im = idom-1, jp = idom+1, jm = idom-1;
                         // treat the source/sink as a pressure boundary
@@ -835,7 +861,7 @@ public:
                 Kokkos::parallel_reduce("gw_et", ncellsIT, KOKKOS_CLASS_LAMBDA (int idx, real &tmp){
                         int ii, jj, kk, ivg, idom, iGlob = icells[idx];
                         gdom.unpackIndicesHalo(iGlob, kk, jj, ii);
-                        idom = (kk-hc)*gdom.nx*gdom.ny + (jj-hc)*gdom.nx + ii - hc;
+                        idom = (kk-gdom.hc)*gdom.nx*gdom.ny + (jj-gdom.hc)*gdom.nx + ii - gdom.hc;
                         gw.wc(iGlob,1) += gdom.dt * qt * coef_wat(idx) * coef_root(idx) / gdom.dz(iGlob);
                         tmp += qt * coef_wat(idx) * coef_root(idx) * gdom.dx * gdom.dy;
                         if (kk == 1)    {
@@ -850,7 +876,7 @@ public:
                 Kokkos::parallel_reduce("gw_et", ncellsIT, KOKKOS_CLASS_LAMBDA (int idx, real &tmp){
                         int ii, jj, kk, ivg, idom, iGlob = icells[idx];
                         gdom.unpackIndicesHalo(iGlob, kk, jj, ii);
-                        idom = (kk-hc)*gdom.nx*gdom.ny + (jj-hc)*gdom.nx + ii - hc;
+                        idom = (kk-gdom.hc)*gdom.nx*gdom.ny + (jj-gdom.hc)*gdom.nx + ii - gdom.hc;
                         gw.wc(iGlob,1) += gdom.dt * qbc;
                         if (qbc > 0)	{tmp += qbc * gdom.dt;}
                         else {tmp -= qbc * gdom.dt;}
@@ -863,7 +889,7 @@ public:
                 	Kokkos::parallel_reduce("gw_et", ncellsIT, KOKKOS_CLASS_LAMBDA (int idx, real &tmp){
                         int ii, jj, kk, ivg, idom, iGlob = icells[idx];
                         gdom.unpackIndicesHalo(iGlob, kk, jj, ii);
-                        idom = (kk-hc)*gdom.nx*gdom.ny + (jj-hc)*gdom.nx + ii - hc;
+                        idom = (kk-gdom.hc)*gdom.nx*gdom.ny + (jj-gdom.hc)*gdom.nx + ii - gdom.hc;
                         // Calculate the cumulative outflow
                         int jp = iGlob+gdom.nxhc, jm = iGlob-gdom.nxhc, kp = iGlob+gdom.nxhc*gdom.nyhc, km = iGlob-gdom.nxhc*gdom.nyhc;
                         if (hbc < gw.h(jp,1))	{
@@ -884,7 +910,7 @@ public:
                 	Kokkos::parallel_reduce("gw_et", ncellsIT, KOKKOS_CLASS_LAMBDA (int idx, real &tmp){
                         int ii, jj, kk, ivg, idom, iGlob = icells[idx];
                         gdom.unpackIndicesHalo(iGlob, kk, jj, ii);
-                        idom = (kk-hc)*gdom.nx*gdom.ny + (jj-hc)*gdom.nx + ii - hc;
+                        idom = (kk-gdom.hc)*gdom.nx*gdom.ny + (jj-gdom.hc)*gdom.nx + ii - gdom.hc;
                         // Only consider drainage under fully saturated condition
                         int ip = iGlob+1, im = iGlob-1, kp = iGlob+gdom.nxhc*gdom.nyhc, km = iGlob-gdom.nxhc*gdom.nyhc;
                         if (hbc < gw.h(ip,1))	{
@@ -905,7 +931,7 @@ public:
                 	Kokkos::parallel_reduce("gw_et", ncellsIT, KOKKOS_CLASS_LAMBDA (int idx, real &tmp){
                         int ii, jj, kk, ivg, idom, iGlob = icells[idx];
                         gdom.unpackIndicesHalo(iGlob, kk, jj, ii);
-                        idom = (kk-hc)*gdom.nx*gdom.ny + (jj-hc)*gdom.nx + ii - hc;
+                        idom = (kk-gdom.hc)*gdom.nx*gdom.ny + (jj-gdom.hc)*gdom.nx + ii - gdom.hc;
                         // Only consider drainage under fully saturated condition
                         int ip = iGlob+1, im = iGlob-1, jp = iGlob+gdom.nxhc, jm = iGlob-gdom.nxhc;
                         if (hbc < gw.h(ip,1))	{

@@ -55,6 +55,7 @@ public:
   Exchange            exch;
 	ExternalBoundaries  ebc;
 
+
  private:
 	Parser              parser;
 	TimeIntegrator      tint;
@@ -69,15 +70,15 @@ public:
   #endif
 
 	double oldVolume,newVolume, diffVolume;
+	#if SERGHEI_SUSPENDED_SEDIMENT
+	real oldSolidVolume,newSolidVolume,diffSolidVolume;
+	#endif
 	double accumDt=0.0;
   
   // Kokkos objects
   Kokkos::Timer timer;
   Kokkos::Timer timer_particles; 
   Kokkos::InitializationSettings kokkosSettings;
-
-public:
-	std::string inFolder, outFolder;
 
 ////////////// METHODS ///////////////
 public:
@@ -113,13 +114,13 @@ public:
 		#endif
 
 		// Initialize the model
-		if(!init.initialize(state, ss.swss, ebc, dom, par, tint, sint, bint, parser, exch, io, inFolder, outFolder)){
-			std::cerr << RERROR "Unable to start the simulation" << "\n";
+		if(!init.initialize(state, ss.swss, ebc, dom, par, tint, sint, bint, parser, exch, io)){
+			if(par.masterproc) std::cerr << RERROR "Unable to start the simulation" << std::endl;
 			return 0;
 		};
 		#if SERGHEI_LPT
-		  if(!parser.readParticles(inFolder,par,&parTrack)){
-			std::cerr << RERROR "Unable to start the simulation because of LPT initialization files" << "\n";
+		  if(!parser.readParticles(io.inFolder,par,&parTrack)){
+			if(par.masterproc) std::cerr << RERROR "Unable to start the simulation because of LPT initialization files" << std::endl;
 		    return 0;
 		  }
 	      parTrack.initialiseParticles(dom, state);
@@ -127,21 +128,18 @@ public:
 	      if(io.outFormat==OUT_VTK){
 			#if SERGHEI_PARTICLE_NO_OUTPUT
 			#else
-	                 io.outputIniParticle(dom, parTrack, outFolder);
+	                 io.outputIniParticle(dom, parTrack, io.outFolder);
 			#endif
+		  }else{
+			io.outputInitParticlesNETCDF(parTrack,dom,par,io.outFolder);
 		  }
-		  #ifdef SERGHEI_HAS_PNETCDF
-		  else{
-			io.outputInitParticlesNETCDF(parTrack,dom,par,outFolder);
-		  }
-		  #endif
-		  std::cerr << GOK "LPT module has been initialized! Number of particles: " << parTrack.N_par << "\n" << std::endl;
+		  if(par.masterproc) std::cerr << GOK "LPT module has been initialized! Number of particles: " << parTrack.N_par << std::endl << std::endl;
 		#endif
 
 
 		// Initialize subsurface model if activated
 		#if SERGHEI_RE_MODEL
-		if (!ginit.initialize_gw(gw, gdom, state, dom, gbc, gmpi, gint, par, io, ss, inFolder, outFolder)) {
+		if (!ginit.initialize_gw(gw, gdom, state, dom, gbc, gmpi, gint, par, io, ss, io.inFolder, io.outFolder)) {
 			std::cerr << RERROR "Unable to initialize the subsurface domain" << "\n"; return 0;
 		};
 		A.init(gdom);
@@ -150,12 +148,12 @@ public:
 		#endif
 
 		#if SERGHEI_TOOLS
-		if(!obs.readInputFiles(inFolder,par)) return 0;
-		if(!obs.configure(dom,outFolder)) return 0;	// observations for surface domain
+		if(!obs.readInputFiles(io.inFolder,par)) return 0;
+		if(!obs.configure(dom,io.outFolder)) return 0;	// observations for surface domain
 		//obs.printGauges(dom);
 		obs.update(state,par,dom);
 		if( par.masterproc){
-			obs.writeLinesSamplingCoordinates(outFolder);
+			obs.writeLinesSamplingCoordinates(io.outFolder);
 			obs.writeGauges(dom.etime);
 			obs.writeLines(dom.etime);
 		}
@@ -179,10 +177,10 @@ public:
 		//integrator at the beginning or the simulation
 		sint.integrate(state,dom,ss.swss);
 		// Write initial time series data
-		io.writeTimeSeriesIni(state,dom,par,ss.swss,sint,bint,ebc.extbc,outFolder);
+		io.writeTimeSeriesIni(state,dom,par,ss.swss,sint,bint,ebc.extbc,io.outFolder);
 		#if SERGHEI_RE_MODEL
-		io.writeSubTimeSeriesIni(gdom, gint, par, outFolder);
-		io.outputSubsurface(gw, gdom, par, outFolder);
+		io.writeSubTimeSeriesIni(gdom, gint, par, io.outFolder);
+		io.outputSubsurface(gw, gdom, par, io.outFolder);
 		#endif
 		// capture initialisation time
 		dom.timers.swe.init.total = timer.seconds();
@@ -203,23 +201,7 @@ public:
 		#if SERGHEI_RE_MODEL
 		gdom.dt = gdom.dt_init;
 		gdom.dtOld = gdom.dt_init;
-		#if SERGHEI_SWE_RE
-		// Set initial gw.dt based on dt_ratio
-		// But first we need to compute initial sw.dt
-		tint.computeDt(state,dom,io);
-		// Use dt_ratio to set initial gw.dt
-		gdom.dt = gdom.dt_ratio * dom.dt;
-		if (gdom.dt > gdom.dt_max) {
-			gdom.dt = gdom.dt_max;
-		}
-		// If gw.dt < sw.dt, synchronize sw.dt to gw.dt
-		if (gdom.dt < dom.dt) {
-			dom.dt = gdom.dt;
-		}
-		#else
 		dom.dt = gdom.dt;
-		#endif
-		gdom.dtOld = gdom.dt;
 		gdom.cg_iter = 0;
 		#else
 		tint.computeDt(state,dom,io);
@@ -229,6 +211,10 @@ public:
 		while (dom.etime < dom.endTime) {
 			//previous mass
 			oldVolume=sint.surfaceVolumeG;
+			#if SERGHEI_SUSPENDED_SEDIMENT
+			oldSolidVolume=sint.surfaceSolidVolumeG;
+			#endif				
+
 			bint.integrate(ebc.extbc,dom,1);//has to be called here (previous time step) with mode==1 (boundary flows)
 			// run surface model
 			#if SERGHEI_SWE_MODEL
@@ -241,114 +227,15 @@ public:
 			#if SERGHEI_RE_MODEL
 				#if SERGHEI_SWE_MODEL
 				// If both surface and subsurface modules are on
-				// Rainfall is first read by the surface module, then copy/aggregate to the subsurface
-				if (gdom.isRain) {
-					if (gdom.dxRatio == 1) {
-						Kokkos::deep_copy(gdom.rainRate, ss.swss.rainRate);
-					} else {
-						// Aggregate rainfall from surface to subsurface
-						Kokkos::parallel_for("aggregate_rainfall", gdom.nCell, KOKKOS_LAMBDA(int idom) {
-							int ii, jj, kk;
-							gdom.unpackIndices(idom, kk, jj, ii);
-							if (kk == 0) {  // Only aggregate for top layer
-								real rain_sum = 0.0;
-								int n_valid = 0;
-								int i_sw_start = ii * gdom.dxRatio;
-								int j_sw_start = jj * gdom.dxRatio;
-								int i_sw_end = (ii + 1) * gdom.dxRatio;
-								int j_sw_end = (jj + 1) * gdom.dxRatio;
-								
-								for (int j_sw = j_sw_start; j_sw < j_sw_end && j_sw < dom.ny; j_sw++) {
-									for (int i_sw = i_sw_start; i_sw < i_sw_end && i_sw < dom.nx; i_sw++) {
-										int iGlobSW = dom.getIndex(j_sw * dom.nx + i_sw);
-										if (!state.isnodata(iGlobSW)) {
-											rain_sum += ss.swss.rainRate(iGlobSW);
-											n_valid++;
-										}
-									}
-								}
-								if (n_valid > 0) {
-									int iGlobGW = gdom.getHaloExtension(ii, jj, kk);
-									gdom.rainRate(iGlobGW) = rain_sum / n_valid;
-								} else {
-									int iGlobGW = gdom.getHaloExtension(ii, jj, kk);
-									gdom.rainRate(iGlobGW) = 0.0;
-								}
-							}
-						});
-					}
-				}
-				// NOTE: qss_gw is NOT reset to zero here to maintain temporal continuity
-				// When dt_ratio > 1, the GW solver doesn't run every surface step
-				// The qss from the last GW solve should persist until the next solve
-				// This ensures physically continuous surface-subsurface exchange
-				
-				// Aggregate surface water depth from surface to subsurface
-				if (gdom.dxRatio == 1) {
-					// Same resolution: direct copy (gw.hs and state.h have same size and indexing)
-					Kokkos::deep_copy(gw.hs, state.h);
-				} else {
-					// Multi-resolution: aggregate surface depth using AREA-WEIGHTED average
-					// This ensures the subsurface sees the correct total water volume per unit area
-					// All valid cells (wet or dry) are included in the average
-					// Dry cells contribute 0 to the sum, giving proper area-weighted average
-					Kokkos::deep_copy(gw.hs, 0.0);
-					Kokkos::parallel_for("aggregate_hs", gdom.nCell, KOKKOS_LAMBDA(int idom) {
-						int ii, jj, kk;
-						gdom.unpackIndices(idom, kk, jj, ii);
-						if (kk == 0) {  // Only aggregate for top layer
-							real h_sum = 0.0;
-							int n_valid = 0;  // Count ALL valid cells, not just wet cells
-							int i_sw_start = ii * gdom.dxRatio;
-							int j_sw_start = jj * gdom.dxRatio;
-							int i_sw_end = (ii + 1) * gdom.dxRatio;
-							int j_sw_end = (jj + 1) * gdom.dxRatio;
-							
-							for (int j_sw = j_sw_start; j_sw < j_sw_end && j_sw < dom.ny; j_sw++) {
-								for (int i_sw = i_sw_start; i_sw < i_sw_end && i_sw < dom.nx; i_sw++) {
-									int iGlobSW = dom.getIndex(j_sw * dom.nx + i_sw);
-									if (!state.isnodata(iGlobSW)) {
-										real h_sw = state.h(iGlobSW);
-										// Include all cells (wet or dry) in the average
-										// Dry cells contribute 0 to the sum
-										if (h_sw > state.hmin) {
-											h_sum += h_sw;
-										}
-										n_valid++;
-									}
-								}
-							}
-							// Store AREA-WEIGHTED average using halo extension index
-							int iGlobGW = gdom.getHaloExtension(ii, jj, kk);
-							if (n_valid > 0) {
-								gw.hs(iGlobGW) = h_sum / n_valid;  // Area-weighted average
-							} else {
-								gw.hs(iGlobGW) = 0.0;
-							}
-						}
-					});
-				}
+				// Rainfall is first read by the surface module, then copy to the subsurface
+				if (gdom.isRain) {Kokkos::deep_copy(gdom.rainRate, ss.swss.rainRate);}
+				Kokkos::deep_copy(gw.hs, state.h);
 				#endif
-			// Surface-subsurface coupling (synchronous or asynchronous based on dt_ratio)
+			// Asynchronous coupling
 			// timer.reset();
-			// For synchronous coupling (dt_ratio = 1): run once per surface step
-			// For asynchronous coupling (dt_ratio > 1): run until subsurface catches up to or exceeds surface time
-			if (gdom.dt_ratio == 1.0) {
-				// Synchronous: run exactly once, ensure time sync
-				gdom.etime = dom.etime;
-				//	PC scheme
-				if (gdom.gw_scheme == 1)	{
-					gwf.pca_solve<Kokkos::DefaultExecutionSpace>(gw, gdom, gbc.gwbc, A, gsolver, ss.gwss, gmpi, gint, par);
-				}
-				//	Modified Picard scheme
-				else {
-					gwf.picard_solve<Kokkos::DefaultExecutionSpace>(gw, gdom, gbc.gwbc, A, gsolver, ss.gwss, gmpi, gint, par);
-				}
-			} else {
-				// Asynchronous: run while subsurface can take a full step before surface time
-				// Subsurface advances by gdom.dt (which is dt_ratio * dom.dt) per step
-				// Condition: gdom.etime + gdom.dt <= dom.etime ensures we can take a full step
-				while (gdom.etime + gdom.dt <= dom.etime) {
+			if (gdom.async)	{
+				if (gdom.etime + gdom.dt < dom.etime)	{
+					gdom.etime += gdom.dt;
 					//	PC scheme
 					if (gdom.gw_scheme == 1)	{
 						gwf.pca_solve<Kokkos::DefaultExecutionSpace>(gw, gdom, gbc.gwbc, A, gsolver, ss.gwss, gmpi, gint, par);
@@ -357,115 +244,57 @@ public:
 					else {
 						gwf.picard_solve<Kokkos::DefaultExecutionSpace>(gw, gdom, gbc.gwbc, A, gsolver, ss.gwss, gmpi, gint, par);
 					}
-					// Advance subsurface time after solver completes
-					gdom.etime += gdom.dt;
+				}
+			}
+			else {
+				gdom.etime = dom.etime;
+				if (gdom.gw_scheme == 1)	{
+					gwf.pca_solve<Kokkos::DefaultExecutionSpace>(gw, gdom, gbc.gwbc, A, gsolver, ss.gwss, gmpi, gint, par);
+				}
+				else {
+					gwf.picard_solve<Kokkos::DefaultExecutionSpace>(gw, gdom, gbc.gwbc, A, gsolver, ss.gwss, gmpi, gint, par);
 				}
 			}
 			gdom.cg_iter += A.cg_iter;
 			// gdom.timers.gw += timer.seconds();
 				// surface-subsurface exchange
 				#if SERGHEI_SWE_MODEL
-					if (gdom.dxRatio == 1) {
-						// Same resolution: direct copy from qss_gw to qss
-						Kokkos::parallel_for("copy_qss_dx1", dom.nCell, KOKKOS_LAMBDA(int idom) {
-							// When dxRatio=1, subsurface and surface have same grid
-							// qss_gw is indexed by subsurface cell index (without halo)
-							// state.qss is indexed by surface cell index (without halo)
-							// They should match directly
-							if (idom >= 0 && idom < gdom.nCell) {
-								state.qss(idom) = gw.qss_gw(idom);
-							} else {
-								state.qss(idom) = 0.0;
-							}
-						});
-					} else {
-						// Multi-resolution: distribute qss from subsurface to surface cells
-						// Key insight: 
-						// - Infiltration (qss < 0): only remove water from WET cells
-						// - Exfiltration (qss >= 0): can add water to ANY cell
-						// For infiltration, scale flux to maintain mass conservation:
-						//   qss_wet = qss_gw * (total_cells / n_wet_cells)
-						Kokkos::parallel_for("distribute_qss_wet_aware", dom.nCell, KOKKOS_LAMBDA(int idom) {
-							// Get surface cell indices (physical, without halo)
-							int i_sw = idom % dom.nx;
-							int j_sw = idom / dom.nx;
-							
-							// Get corresponding subsurface cell indices
-							int i_gw = i_sw / gdom.dxRatio;
-							int j_gw = j_sw / gdom.dxRatio;
-							int iGlobGW = j_gw * gdom.nx + i_gw;  // Subsurface cell index (without halo)
-							
-							if (iGlobGW >= 0 && iGlobGW < gdom.nCell) {
-								real qss_subsurface = gw.qss_gw(iGlobGW);
-								
-								// Check if this surface cell is wet
-								int iGlobSW_halo = dom.getIndex(idom);
-								bool is_wet = (state.h(iGlobSW_halo) > state.hmin) && !state.isnodata(iGlobSW_halo);
-								
-								if (qss_subsurface >= 0.0) {
-									// Exfiltration: apply uniformly to all cells (water can emerge anywhere)
-									state.qss(idom) = qss_subsurface;
-								} else {
-									// Infiltration: only apply to wet cells, scaled for mass conservation
-									if (is_wet) {
-										// Count wet cells in this subsurface cell footprint
-										int n_wet = 0;
-										int i_sw_start = i_gw * gdom.dxRatio;
-										int j_sw_start = j_gw * gdom.dxRatio;
-										int i_sw_end = (i_gw + 1) * gdom.dxRatio;
-										int j_sw_end = (j_gw + 1) * gdom.dxRatio;
-										int total_cells = 0;
-										
-										for (int jj = j_sw_start; jj < j_sw_end && jj < dom.ny; jj++) {
-											for (int ii = i_sw_start; ii < i_sw_end && ii < dom.nx; ii++) {
-												int idx = jj * dom.nx + ii;
-												int iGlob_check = dom.getIndex(idx);
-												if (!state.isnodata(iGlob_check)) {
-													total_cells++;
-													if (state.h(iGlob_check) > state.hmin) {
-														n_wet++;
-													}
-												}
-											}
-										}
-										
-										// Scale infiltration to maintain mass conservation
-										// Total flux = qss_gw * area_subsurface = qss_scaled * n_wet * area_surface_cell
-										// qss_scaled = qss_gw * total_cells / n_wet
-										if (n_wet > 0) {
-											state.qss(idom) = qss_subsurface * (real)total_cells / (real)n_wet;
-										} else {
-											state.qss(idom) = 0.0;  // No wet cells, no infiltration
-										}
-									} else {
-										// Dry cell: no infiltration
-										state.qss(idom) = 0.0;
-									}
-								}
-							} else {
-								state.qss(idom) = 0.0;
-							}
-						});
-					}
+					Kokkos::deep_copy(state.qss, gw.qss);
 					tint.computeGwExchange(state , dom);
 				#endif
 			#endif
 
 			oldVolume+=(bint.inflowDischargeG - bint.outflowDischargeG)*dom.dt; //Boundary fluxes with the new dt
+			#if SERGHEI_SUSPENDED_SEDIMENT
+			oldSolidVolume+=(bint.inflowSolidDischargeG - bint.outflowSolidDischargeG)*dom.dt; //Boundary fluxes with the new dt
+			#endif
+
 			bint.integrate(ebc.extbc,dom,0);//called here with mode==0 (adjusted volume)
 			oldVolume+=bint.adjustedVolumeG; //Some mass changes can occur through the boundaries
 			sint.integrate(state,dom,ss.swss); //new mass after the new time step integration
 			oldVolume+= (sint.rainFluxG-sint.infFluxG)*dom.dt; //after integrate, we have to sum the rain and inf mass
-			newVolume=sint.surfaceVolumeG;
+			#if SERGHEI_SUSPENDED_SEDIMENT
+			oldVolume += sint.BedExchangeVolG;
+			oldSolidVolume += sint.BedExchangeSolidG;
+			#endif
 
+			//new mass
+			newVolume=sint.surfaceVolumeG;
 			if(fabs(oldVolume)>TOL12){
 				diffVolume=(newVolume-oldVolume)/oldVolume*100.;
 			}else{
 				diffVolume=0.0;
 			}
-			
+			#if SERGHEI_SUSPENDED_SEDIMENT
+			newSolidVolume=sint.surfaceSolidVolumeG;
+			if(fabs(oldSolidVolume)>TOL12){
+				diffSolidVolume=(newSolidVolume-oldSolidVolume)/oldSolidVolume*100.;
+			}else{
+				diffSolidVolume=0.0;
+			}
+			#endif			
 			dom.etime += dom.dt;
-			dom.nIter++;
+			dom.nTimeSteps++;
 			dom.countIterDt++;
 			accumDt+=dom.dt;		
 
@@ -473,12 +302,14 @@ public:
 			  parTrack.update(dom,state);
 			#endif
 			
-			if (dom.nIter%io.nScreen==0 || fabs(dom.etime - dom.startTime - io.numOut*io.outFreq) <= TOL12) {
+			if (dom.nTimeSteps%io.nScreen==0 || fabs(dom.etime - dom.startTime - io.numOut*io.outFreq) <= TOL12) {
 				if (par.masterproc) {
 					std::cerr << std::fixed;
-					std::cerr << GSTAR "TIME: " << dom.etime << " average dt: " << accumDt/dom.countIterDt <<"\n";
+					std::cerr << GSTAR "TIME: " << dom.etime << " av_dt: " << accumDt/dom.countIterDt << " iter: " << dom.nTimeSteps <<"\n";
 					std::cerr.precision(9);
 					std::cerr << std::scientific;
+					std::cerr << "     Inner Volume: " << newVolume <<"\n";
+					std::cerr << "     Diff Volume: " << diffVolume <<"\n";
 					std::cerr << std::fixed;
 					std::cerr.precision(12);
 					#if SERGHEI_SWE_MODEL
@@ -500,21 +331,43 @@ public:
 						std::cerr << YEXC "   Rain Volume:\t" << sint.rainFluxG*dom.dt <<"\n";
 						// std::cerr << YEXC "   Inf Volume:\t" << sint.infFluxG*dom.dt <<"\n";
 						#if SERGHEI_DEBUG_MASS_CONS > 1
-                            getchar();
-                        #endif
+							getchar();
+						#endif
 					}
+
+					#if SERGHEI_SUSPENDED_SEDIMENT
+						std::cerr.precision(9);
+						std::cerr << std::scientific;
+						std::cerr << "     Inner Solid Volume: " << newSolidVolume <<"\n";
+						std::cerr << "     Diff Solid Volume: " << diffSolidVolume <<"\n";
+						std::cerr << std::fixed;
+						std::cerr.precision(12);
+						std::cerr << "     Inflow Solid Discharge: " << bint.inflowSolidDischargeG <<"\n";
+						std::cerr << "     Outflow Solid Discharge: " << bint.outflowSolidDischargeG <<"\n";						
+						if(fabs(diffSolidVolume)>TOL8){
+							std::cerr << YEXC "   Old Solid Volume:\t" << oldSolidVolume <<"\n";
+							std::cerr << YEXC "   New Solid Volume:\t" << newSolidVolume <<"\n";
+							std::cerr << YEXC "   Diff Solid Volume:\t" << newSolidVolume-oldSolidVolume <<"\n";
+							std::cerr << YEXC "   Inflow Solid Volume:\t" << bint.inflowSolidDischargeG*dom.dt <<"\n";
+							std::cerr << YEXC "   Outflow Solid Volume:\t" << bint.outflowSolidDischargeG*dom.dt <<"\n";
+							#if SERGHEI_DEBUG_MASS_CONS > 1
+								getchar();
+							#endif
+						}
+					#endif
+
 				}
 				if(fabs(dom.etime - dom.startTime - io.numOut*io.outFreq) <= TOL12){
 					
 					#if SERGHEI_LPT==0
 					  #if SERGHEI_SWE_MODEL
-					  io.output(state, dom, ss.swss, par,outFolder);
+					  io.output(state, dom, ss.swss, par);
 					  #endif
 					  #if SERGHEI_RE_MODEL
-					  io.outputSubsurface(gw, gdom, par,outFolder);
+					  io.outputSubsurface(gw, gdom, par, io.outFolder);
 					  #endif
 					#else
-					  io.output(state, dom, ss.swss, par,outFolder, parTrack);
+					  io.output(state, dom, ss.swss, par, io.outFolder, parTrack);
 					#endif
 
 					if(par.masterproc) std::cerr << GIO "File " << io.numOut-1 << " written" << std::endl; //io.numOut already updated
@@ -535,6 +388,9 @@ public:
 			if (dom.etime >= io.numObs*io.obsFreq) {
 				#if SERGHEI_TOOLS
 				obs.update(state,par,dom);
+				if (par.masterproc){
+					obs.write(dom);
+				}
 				#endif
 				io.writeTimeSeries(state,dom,par,sint,bint,ebc.extbc);
 				#if SERGHEI_RE_MODEL
@@ -551,32 +407,11 @@ public:
 			#if SERGHEI_SWE_RE
 				tint.computeDt(state,dom,io);
 				#if SERGHEI_RE_MODEL
-				// Use dt_ratio to determine coupling mode
-				// Calculate what gw.dt should be based on ratio
-				real gdom_dt_target = gdom.dt_ratio * dom.dt;
-				// Respect dt_max as upper bound
-				if (gdom_dt_target > gdom.dt_max) {
-					gdom_dt_target = gdom.dt_max;
+				if (!gdom.async)	{
+					if (dom.dt < gdom.dt)	{gdom.dt = dom.dt;}
+					else {dom.dt = gdom.dt;}
 				}
-				// When gdom_dt_target >= dom.dt: use dt_ratio * dom.dt (asynchronous when dt_ratio > 1)
-				// When gdom_dt_target < dom.dt: set dom.dt = gdom_dt_target (synchronize surface to subsurface)
-				if (gdom_dt_target >= dom.dt) {
-					gdom.dt = gdom_dt_target;
-				} else {
-					// If calculated gw.dt < sw.dt (shouldn't happen if dt_ratio >= 1, but handle for safety)
-					gdom.dt = gdom_dt_target;
-					dom.dt = gdom.dt;
-				}
-				// For synchronous coupling (dt_ratio = 1), ensure both use the same dt
-				// This handles cases where solver may have adjusted gdom.dt
-				if (gdom.dt_ratio == 1.0) {
-					// Both should use the same dt - use the minimum to ensure stability
-					if (dom.dt < gdom.dt) {
-						gdom.dt = dom.dt;
-					} else {
-						dom.dt = gdom.dt;
-					}
-				}
+				else if (dom.dt > gdom.dt)	{dom.dt = gdom.dt;}
 				#endif
 			#elif SERGHEI_RE_MODEL
 				dom.dt = gdom.dt;
@@ -595,7 +430,7 @@ public:
 			std::cout << GGD << GRAY << __PRETTY_FUNCTION__ << RESET << std::endl;
 		#endif
 		#if SERGHEI_LPT
-		  io.writeParticleFile(dom,parTrack,par,outFolder);
+		  io.writeParticleFile(dom,parTrack,par,io.outFolder);
 		#endif
 		dom.timers.total = timer.seconds();
 		#if SERGHEI_RE_MODEL
@@ -612,7 +447,7 @@ public:
 		dom.relative = dom.timers;
 		dom.relative.computeRelative(dom.timers);
 		dom.relative.gather(par);
-		io.writeLogFile(dom, par, outFolder);
+		io.writeLogFile(dom, par, io.outFolder);
 		io.closeOutputStreams();
 		#if SERGHEI_TOOLS
 			if(par.masterproc) obs.closeOutputStreams();
@@ -622,3 +457,4 @@ public:
 
 
 };
+

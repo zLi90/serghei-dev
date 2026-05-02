@@ -44,11 +44,21 @@ class ObservationGauge{
     KOKKOS_INLINE_FUNCTION void fetchSurfaceState(const State &state){
       if(ii < 0){  // gauge is undefined, therefore values should be zero, so they can be reduced with MPI_SUM
         sw.h = sw.hu = sw.hv = sw.z = 0.;
+        #if SERGHEI_SCALAR_TRANSPORT
+        sw.hconc=0;
+        #endif        
       }else{
         sw.h = state.h(ii);
         sw.hu = state.hu(ii);
         sw.hv = state.hv(ii);
         sw.z = state.z(ii);
+        #if SERGHEI_SCALAR_TRANSPORT
+        real aux=0.0; 
+        for(int iphi=0; iphi<state.ade.nScalar; iphi++){
+          aux += state.ade.hphi(ii,iphi);
+        }
+        sw.hconc = aux;
+        #endif        
       }
     };
 
@@ -96,6 +106,10 @@ class ObservationLine{
     real swflow=0; // surface water flow rate (discharge) across line
     real swvol=0; // surface water accumulated volume across the line
     geometry::point *normal;  // normal vector to each line segment
+
+    //Scalar and sediment transport
+    real solflow=0; // solid rate (discharge) across line
+    real solvol=0; // accumulated solid volume across the line  
 
     inline void resample(){
       length = 0;
@@ -165,13 +179,29 @@ class ObservationLine{
       #if SERGHEI_DEBUG_TOOLS
       std::cout << GGD << GRAY << __PRETTY_FUNCTION__ << RESET << std::endl;
       #endif
-      real q,ds=0;
-      swflow = 0;
+      real q  = 0;
+      real ds = 0;
+      swflow  = 0;
+      solflow = 0;
+
+      #if SERGHEI_SCALAR_TRANSPORT 
+        real v  = 0;
+      #endif
+
       for(int ig=0; ig<Ng-1; ig++){
-        q = g(ig).sw.hu * normal[ig](0) + g(ig).sw.hv * normal[ig](1);
-        ds = sg[ig+1]-sg[ig];
-        swflow += q * ds;
-        swvol += swflow*dt;
+        if(g(ig).sw.h>TOL_WETDRY){
+          q = g(ig).sw.hu * normal[ig](0) + g(ig).sw.hv * normal[ig](1);
+          ds = sg[ig+1]-sg[ig];
+
+          swflow += q * ds;
+          swvol += swflow*dt;
+
+          #if SERGHEI_SCALAR_TRANSPORT 
+            v = q / g(ig).sw.h; 
+            solflow += g(ig).sw.hconc * v * ds;
+            solvol += solflow*dt;
+          #endif
+        }
       }
     };
 
@@ -503,7 +533,11 @@ public:
         if(lines[il].mode == OBSLINE_MODE_XS){
           linesOut[jj].open(lineFilenames[jj]);
           if (linesOut[jj].is_open()){
-            linesOut[jj] << "time\tQ\tV";
+            linesOut[jj] << "time \t";
+            linesOut[jj] << "Q \t V \t";
+            #if SERGHEI_SCALAR_TRANSPORT 
+            linesOut[jj] << "QS \t VS \t";
+            #endif            
             linesOut[jj] << std::endl;
             jj++;
           }else{
@@ -557,7 +591,15 @@ public:
       }
       if(lines[il].mode == OBSLINE_MODE_XS ){
         std::cout.precision(OUTPUT_PRECISION);
-        linesOut[jj] << std::scientific << time << "\t" << lines[il].swflow << "\t" << lines[il].swvol << std::endl;
+        linesOut[jj]  << std::scientific 
+                      << time << "\t" 
+                      << lines[il].swflow << "\t" 
+                      << lines[il].swvol << "\t"
+                      #if SERGHEI_SCALAR_TRANSPORT 
+                      << lines[il].solflow << "\t" 
+                      << lines[il].solvol << "\t" 
+                      #endif
+                      << std::endl;
         jj++;
       }
     }
@@ -613,20 +655,29 @@ public:
       if(par.masterproc) gauges(ig).sw.h = out[ig];
       in[ig] = gauges(ig).sw.hu;
     }
-    MPI_Reduce(in, out,N, SERGHEI_MPI_REAL, MPI_SUM,SERGHEI_MASTERPROC, MPI_COMM_WORLD);
+    MPI_Reduce(in, out,N, SERGHEI_MPI_REAL, MPI_SUM, SERGHEI_MASTERPROC, MPI_COMM_WORLD);
     for(int ig = 0; ig < N; ig++){
       if(par.masterproc) gauges(ig).sw.hu = out[ig];
       in[ig] = gauges(ig).sw.hv;
     }
-    MPI_Reduce(in, out, N, SERGHEI_MPI_REAL, MPI_SUM,SERGHEI_MASTERPROC, MPI_COMM_WORLD);
+    MPI_Reduce(in, out, N, SERGHEI_MPI_REAL, MPI_SUM, SERGHEI_MASTERPROC, MPI_COMM_WORLD);
     for(int ig = 0; ig < N; ig++){
       if(par.masterproc) gauges(ig).sw.hv = out[ig];
-	in[ig] = gauges(ig).sw.z;
+	    in[ig] = gauges(ig).sw.z;
     }
-    MPI_Reduce(in, out, N, SERGHEI_MPI_REAL, MPI_SUM,SERGHEI_MASTERPROC, MPI_COMM_WORLD);
+    MPI_Reduce(in, out, N, SERGHEI_MPI_REAL, MPI_SUM, SERGHEI_MASTERPROC, MPI_COMM_WORLD);
     for(int ig = 0; ig < N; ig++){
       if(par.masterproc) gauges(ig).sw.z = out[ig];
     }
+    #if SERGHEI_SCALAR_TRANSPORT 
+    for(int ig = 0; ig < N; ig++){
+      in[ig] = gauges(ig).sw.hconc;
+    }
+    MPI_Reduce(in, out, N, SERGHEI_MPI_REAL, MPI_SUM, SERGHEI_MASTERPROC, MPI_COMM_WORLD);
+    for(int ig = 0; ig < N; ig++){
+      if(par.masterproc) gauges(ig).sw.hconc = out[ig];
+    }    
+    #endif 
     delete out,in;
   };
 
@@ -654,9 +705,9 @@ public:
       }
       // });
       gaugeStateReduction(lines[il].g, lines[il].Ng, par);
-	if(par.masterproc){
-      		if(lines[il].mode==OBSLINE_MODE_XS) lines[il].computeFlux(dt);
-	}
+      if(par.masterproc){
+        if(lines[il].mode==OBSLINE_MODE_XS) lines[il].computeFlux(dt);
+      }
     }
   };
 

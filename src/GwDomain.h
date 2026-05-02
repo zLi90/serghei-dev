@@ -7,15 +7,13 @@
 class GwDomain : public Domain {
 
 public:
+    int hc = 1; // halo cells, must be 1 for subsurface model
     // Time stepping options
     real dt_init, dt_max, dtOld;
-    real dt_ratio;  // Fixed ratio between gw.dt and sw.dt (dt_ratio >= 1.0, default 1.0 for synchronous coupling)
     // Subsurface domain dimensions
     real thickH, topZ, zll, dx, dy, dz_multiplier, dz_base;
     int nz, nz_glob, nhalo, nxhc, nyhc, nzhc;
     int nCellSw, nCellSwMem;
-    // Multi-resolution coupling
-    int dxRatio;  // Grid size ratio (subsurface/surface), default = 1
     // Domain properties
     int nSoilID, aev, hmin;
     int hasRoot, hasET;
@@ -25,6 +23,7 @@ public:
     // Numerical scheme
     int gw_scheme, cg_iter = 1000000;
 	real cg_tol = 1e-8;
+    bool async;
     // Kokkos views
     realArr x, y, z, dz, depth, sinx, cosx, siny, cosy, rainRate, evapRate, etpmRate;
     intArr isnodata, onboundary;
@@ -52,24 +51,6 @@ public:
     KOKKOS_INLINE_FUNCTION int getSubdomainExtension(const Parallel &par, const int i, const int j, const int k) const{
         return( k*nx_glob*ny_glob + (par.j_beg+j)*nx_glob + par.i_beg+i ); //index for the subdomain (par.j_beg+j,par.i_beg+i)
     };
-    
-    // Multi-resolution index mapping functions
-    // Get subsurface cell index from surface cell indices (i_sw, j_sw are surface indices)
-    KOKKOS_INLINE_FUNCTION int getGwIndexFromSw(int i_sw, int j_sw, int nx_sw) const {
-        int i_gw = i_sw / dxRatio;
-        int j_gw = j_sw / dxRatio;
-        return j_gw * nx + i_gw;
-    }
-    
-    // Get surface cell index range within a subsurface cell
-    KOKKOS_INLINE_FUNCTION void getSwIndicesInGw(int i_gw, int j_gw, 
-                                                  int &i_sw_start, int &j_sw_start,
-                                                  int &i_sw_end, int &j_sw_end) const {
-        i_sw_start = i_gw * dxRatio;
-        j_sw_start = j_gw * dxRatio;
-        i_sw_end = (i_gw + 1) * dxRatio;
-        j_sw_end = (j_gw + 1) * dxRatio;
-    }
     // Initialize surface domain
     // void initialise() {
     //     // physical cells onlys

@@ -5,11 +5,16 @@
 #include "define.h"
 #include "SArray.h"
 #include "Indexing.h"
+#include "landuse.h"
 #include <set>
 
 #ifndef SERGHEI_MAXFLOOD
 #define SERGHEI_MAXFLOOD 0
 #endif
+#include "ScalarTransport.h"
+#include "Sediment.h"
+
+#define SERGHEI_N_VARS_SWE 3
 
 typedef struct{
   real h=0;
@@ -19,6 +24,9 @@ typedef struct{
     real w=0.0;
   #endif
   real z=0;
+  #if SERGHEI_SCALAR_TRANSPORT
+    real hconc=0; //total solute/sediment h*phi in flow column
+  #endif
 } swState;
 
 
@@ -60,12 +68,21 @@ public:
   boolArr isnodata; //contains 0 if is a regular cell, 1 if is nodata cell
   intArr isBound; //positive values for inlet boundaries, negative values for outlet bvoundaries, 0 for inner cells
 
+  #if SERGHEI_EROSIVE_SHEAR
+  realArr shearAccum;  // accumulated shear stress per cell until current time [M*L/T] 
+  realArr phiTot;  
+  #endif 
+
   #if SERGHEI_MAXFLOOD
     realArr hMax;
     realArr momentumMax;
     realArr time_hMax;
   #endif
+  #if SERGHEI_SEDIMENT_TRANSPORT
+  realArr zini; //initial bed elevation
+  #endif
 
+  MapClass landuse;
 
   inline void allocate(Domain &dom){
     h 				= realArr( "h" , dom.nCellMem );
@@ -117,7 +134,6 @@ public:
     Kokkos::deep_copy(isnodata, false);
     Kokkos::deep_copy(dsw0, 0);
     Kokkos::deep_copy(dsw1, 0);
-    Kokkos::deep_copy(qss, 0);  // Initialize surface-subsurface exchange flux to zero
     #if SERGHEI_VERTICAL_VELOCITY
       Kokkos::deep_copy(w, 0);
       Kokkos::deep_copy(dZ_X, 0);
@@ -126,7 +142,23 @@ public:
       Kokkos::deep_copy(dU_Y, 0);
     #endif
 	if(dom.id==0) std::cout << GOK << "State allocated and initialised" << std::endl;
+
+    #if SERGHEI_EROSIVE_SHEAR   
+    shearAccum = realArr("shearAccum", dom.nCellMem);
+    phiTot = realArr("phiTot", dom.nCellMem);
+    #endif
+
+    #if SERGHEI_SEDIMENT_TRANSPORT
+    zini 				= realArr( "zini" , dom.nCellMem );
+    #endif
   }
+
+  #if SERGHEI_SCALAR_TRANSPORT
+  ADEsolver mutable ade;
+  #endif
+  #if SERGHEI_SEDIMENT_TRANSPORT
+  SedimentSolver mutable sediment;
+  #endif
 
   inline void filterDomain(const Domain &dom){
     Kokkos::parallel_for("filter_domain",dom.nCell,KOKKOS_CLASS_LAMBDA(int iGlob) {
@@ -139,6 +171,65 @@ public:
     });
   }
 };
+
+
+#if SERGHEI_EROSIVE_SHEAR  
+KOKKOS_INLINE_FUNCTION real computeShearStress(const real &h, 
+  const real &hu, 
+  const real &hv,
+  const real &roughness,
+  const State &state){    
+  #if SERGHEI_DEBUG_WORKFLOW
+    std::cout << GGD << __PRETTY_FUNCTION__ << std::endl;
+  #endif 
+  //-----------------------------------------------------
+    real Sf;
+    real umod;
+    real z0=state.hmin;
+    real tau=0.0;
+
+    if(h > z0){
+
+      #if SERGHEI_EROSIVE_SHEAR_FORMULATION==1 //boundary shear stress computation
+      umod=sqrt(hu*hu+hv*hv)/h;
+      Sf=roughness*roughness*umod*umod/(h*cbrt(h));
+      tau=RHOW*GRAV*h*Sf;
+      #endif
+    
+    }
+  return(tau);
+};
+
+KOKKOS_INLINE_FUNCTION real computeShields(const real &h, 
+  const real &hu, 
+  const real &hv,
+  const real &roughness,
+  const real &hmin){    
+  #if SERGHEI_DEBUG_WORKFLOW
+    std::cout << GGD << __PRETTY_FUNCTION__ << std::endl;
+  #endif 
+  //-----------------------------------------------------
+    real ds=0.001;
+    real Sf;
+    real umod;
+    real aux=(RHOS-RHOW)*GRAV*ds;
+    real tauC=0.030*aux;
+    real tau=0.0;
+    real Dshields=0.0;
+
+    //boundary shear stress computation
+    if(h>TOL4){
+      umod=sqrt(hu*hu+hv*hv)/h;
+      Sf=roughness*roughness*umod*umod/(h*cbrt(h));
+      tau=RHOW*GRAV*h*Sf;
+      Dshields=tau/aux; //contabiliza todo
+    }
+
+  return(Dshields);
+};
+#endif  
+
+
 
 
 class ShallowWater{

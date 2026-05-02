@@ -5,6 +5,7 @@
 #include "SourceSink.h"
 #include "Domain.h"
 #include "Indexing.h"
+#include "Sediment.h"
 
 /*
 // potential solution for custom reductions
@@ -66,6 +67,15 @@ class surfaceIntegrator {
   real rainAccumG = 0.;   // accumulated rainfall in simulation [L^3] (global)
   real infFluxG ;    // total infiltration flux [L^3/T] (global)
   real infAccumG = 0.;    // accumulated infiltration in simulation [L^3] (global)
+	
+	real surfaceSolidVolume = 0.; // surface suspended sediment volume in domain [L^3] (local)
+	real surfaceSolidVolumeG = 0.; // surface suspended sediment volume in domain [L^3] (global)
+	real BedExchangeSolid = 0.; // bed exchange solid (only) volume in domain [L^3] (local)
+	real BedExchangeSolidG = 0.; // bed exchange solid (only) volume in domain [L^3] (global)	
+	real BedExchangeVol = 0.; // bed exchange volume in domain [L^3] (local)
+	real BedExchangeVolG = 0.; // bed exchange volume in domain [L^3] (global)
+
+
 
   // pointers
   SourceSinkData *ss;
@@ -83,102 +93,64 @@ class surfaceIntegrator {
     timerFull.reset();
 
     surfaceVolume = 0;
-	rainFlux=0.0;
-	infFlux=0.0;
+	
 	if(dom.etime<TOL12){ //change by initial time when hotstart is implemented
 	 	rainAccum=0.0;
 	 	infAccum=0.0;
 	}
 
-	// Copy host-side scalar values to local variables for GPU capture (by value)
-	// Plain class members like int/bool are in host memory and need to be copied
-	const int isRain_local = dom.isRain;
-	const int infModel_local = ss.inf.model;
-	const real area_local = dom.cellArea();
-	const real dt_local = dom.dt;
-	const int nx_local = dom.nx;
-
-	// Copy Kokkos Views to local variables for proper GPU capture
-	// Views are shallow copies, so this is efficient
-	realArr h_view = state.h;
-	boolArr isnodata_view = state.isnodata;
-
-	// First reduction: always compute surface volume
-	Kokkos::parallel_reduce( "integrate_surface_h", dom.nCell , KOKKOS_LAMBDA (int iGlob, real & hSum) {
-		// Compute halo-extended index (same logic as dom.getIndex)
-		int i = iGlob % nx_local;
-		int j = iGlob / nx_local;
-		int ii = (hc + j) * (nx_local + 2*hc) + hc + i;
-		
-		if(!isnodata_view(ii)){
-			real h_val = h_view(ii);
-			// Use Kokkos-compatible NaN/Inf checks (avoid std:: functions on GPU)
-			// NaN check: val != val is true only for NaN
-			bool h_valid = (h_val == h_val) && (h_val != HUGE_VAL) && (h_val != -HUGE_VAL) && (h_val >= 0.0);
-			if(h_valid) {
-        		hSum += h_val * area_local;
+	//sample::MassType mass;
+	Kokkos::parallel_reduce( dom.nCell , KOKKOS_LAMBDA (int iGlob, real & hSum, real &rainSum, real& infSum) {
+    	int ii = dom.getIndex(iGlob);
+		if(!state.isnodata(ii)){
+			real area = dom.cellArea();
+        	hSum +=  state.h(ii) * area;
+			if(dom.isRain){
+				rainSum += ss.rainRate(ii) * area;
+				#if SERGHEI_NETCDF_FORCING
+				ss.rainAccum(ii) += ss.rainRate(ii)*dom.dt;
+				#endif
+			}
+			if(ss.inf.model){
+				real inffluxlocal = ss.inf.rate(ii) * area;
+				infSum += inffluxlocal;
+				ss.inf.infVol(ii) += inffluxlocal * dom.dt;
 			}
 		}
-    } , Kokkos::Sum<real>(surfaceVolume));
-
-	// Second reduction: rain flux (only if rain is enabled)
-	if(isRain_local) {
-		realArr rainRate_view = ss.rainRate;
-		Kokkos::parallel_reduce( "integrate_surface_rain", dom.nCell , KOKKOS_LAMBDA (int iGlob, real &rainSum) {
-			int i = iGlob % nx_local;
-			int j = iGlob / nx_local;
-			int ii = (hc + j) * (nx_local + 2*hc) + hc + i;
-			
-			if(!isnodata_view(ii)){
-				real rain_val = rainRate_view(ii);
-				bool rain_valid = (rain_val == rain_val) && (rain_val != HUGE_VAL) && (rain_val != -HUGE_VAL);
-				if(rain_valid) {
-					rainSum += rain_val * area_local;
-				}
-			}
-		} , Kokkos::Sum<real>(rainFlux));
-	}
-
-	// Third reduction and update: infiltration (only if infiltration model is enabled)
-	if(infModel_local){
-		realArr infRate_view = ss.inf.rate;
-		realArr infVol_view = ss.inf.infVol;
-		
-		Kokkos::parallel_reduce( "integrate_surface_inf", dom.nCell , KOKKOS_LAMBDA (int iGlob, real& infSum) {
-			int i = iGlob % nx_local;
-			int j = iGlob / nx_local;
-			int ii = (hc + j) * (nx_local + 2*hc) + hc + i;
-			
-			if(!isnodata_view(ii)){
-				real infrate = infRate_view(ii);
-				bool inf_valid = (infrate == infrate) && (infrate != HUGE_VAL) && (infrate != -HUGE_VAL) && (infrate >= 0.0);
-				if(inf_valid) {
-					real inffluxlocal = infrate * area_local;
-					infSum += inffluxlocal;
-				}
-			}
-		} , Kokkos::Sum<real>(infFlux));
-
-		// Separate parallel_for to update infVol (cannot write inside parallel_reduce)
-		Kokkos::parallel_for( "update_infVol", dom.nCell , KOKKOS_LAMBDA (int iGlob) {
-			int i = iGlob % nx_local;
-			int j = iGlob / nx_local;
-			int ii = (hc + j) * (nx_local + 2*hc) + hc + i;
-			
-			if(!isnodata_view(ii)){
-				real infrate = infRate_view(ii);
-				bool inf_valid = (infrate == infrate) && (infrate != HUGE_VAL) && (infrate != -HUGE_VAL) && (infrate >= 0.0);
-				if(inf_valid) {
-					real inffluxlocal = infrate * area_local;
-					infVol_view(ii) += inffluxlocal * dt_local;
-				}
-			}
-		});
-	}
-
+    } , Kokkos::Sum<real>(surfaceVolume) , Kokkos::Sum<real>(rainFlux), Kokkos::Sum<real>(infFlux));
 	rainAccum += rainFlux * dom.dt;
 	infAccum += infFlux * dom.dt;
 
+
+  	#if SERGHEI_SUSPENDED_SEDIMENT
+			surfaceSolidVolume = 0.0;
+			Kokkos::parallel_reduce( dom.nCell , KOKKOS_LAMBDA (int iGlob, real &valUpdate) {
+				int ii = dom.getIndex(iGlob);
+				bool nodata=state.isnodata(ii);
+				if(!nodata){
+					for(int iphi=0;iphi<state.ade.nScalar;iphi++){
+						valUpdate += state.ade.hphi(ii,iphi)*dom.cellArea();
+					} 
+				}	
+			} , Kokkos::Sum<real>(surfaceSolidVolume) );
+			Kokkos::fence();			
+		#endif	
+		
+  	#if SERGHEI_SUSPENDED_SEDIMENT
+		BedExchangeVol = 0.0;
+		BedExchangeSolid = 0.0;
+		Kokkos::parallel_reduce( dom.nCell , KOKKOS_LAMBDA (int iGlob, real &valUpdate1, real &valUpdate2) {
+			int ii = dom.getIndex(iGlob);
+			bool nodata=state.isnodata(ii);
+			double zvol;
+			if(!nodata){
+				zvol = state.sediment.bedExchangeVol(ii)*dom.cellArea();
+				valUpdate1 += zvol;
+				valUpdate2 += state.sediment.bedConc*zvol; //1-xi will change by cells;
+			}
+		} , Kokkos::Sum<real>(BedExchangeVol), Kokkos::Sum<real>(BedExchangeSolid) );
+		Kokkos::fence();
+		#endif
 	Kokkos::fence();
 
 	
@@ -195,6 +167,15 @@ class surfaceIntegrator {
 		MPI_Allreduce(&rainAccum, &rainAccumG, 1, SERGHEI_MPI_REAL , MPI_SUM, MPI_COMM_WORLD);
 		MPI_Allreduce(&infFlux, &infFluxG, 1, SERGHEI_MPI_REAL , MPI_SUM, MPI_COMM_WORLD);
 		MPI_Allreduce(&infAccum, &infAccumG, 1, SERGHEI_MPI_REAL , MPI_SUM, MPI_COMM_WORLD);
+
+		#if SERGHEI_SUSPENDED_SEDIMENT
+		surfaceSolidVolumeG=0.0;
+		BedExchangeSolidG=0.0;
+		BedExchangeVolG=0.0;
+		MPI_Allreduce(&surfaceSolidVolume, &surfaceSolidVolumeG, 1, SERGHEI_MPI_REAL , MPI_SUM, MPI_COMM_WORLD);	
+		MPI_Allreduce(&BedExchangeSolid, &BedExchangeSolidG, 1, SERGHEI_MPI_REAL , MPI_SUM, MPI_COMM_WORLD);	
+		MPI_Allreduce(&BedExchangeVol, &BedExchangeVolG, 1, SERGHEI_MPI_REAL , MPI_SUM, MPI_COMM_WORLD);	
+		#endif
 		MPI_Barrier(MPI_COMM_WORLD);
   		dom.timers.swe.integrate.mpi += timer.seconds();
 	}
@@ -221,6 +202,18 @@ public:
   real outflowAccumulatedG = 0.0; // boundary accumulated outflow volume in domain [L^3] (global)
   real inflowDischargeG; // boundary inflow discharge in domain [L^3/T] (global)
   real inflowAccumulatedG = 0.0; // boundary accumulated inflow volume in domain [L^3] (global)
+
+	#if SERGHEI_SUSPENDED_SEDIMENT
+		real outflowSolidDischarge;
+		real outflowSolidAccumulated = 0;
+		real inflowSolidDischarge;
+		real inflowSolidAccumulated = 0;
+
+		real outflowSolidDischargeG;
+		real outflowSolidAccumulatedG = 0;
+		real inflowSolidDischargeG;
+		real inflowSolidAccumulatedG = 0;		
+	#endif		
 
 
   std::vector<ExtBC>* extbc;
@@ -259,6 +252,13 @@ public:
      	inflowAccumulated= 0.0;
      	outflowAccumulated=0.0;
 
+		#if SERGHEI_SUSPENDED_SEDIMENT
+			real outflowSolidDischarge = 0.0;
+			real outflowSolidAccumulated = 0.0;
+			real inflowSolidDischarge = 0.0;
+			real inflowSolidAccumulated = 0.0;
+		#endif		 
+
 		 // integrate over all the open external boundaries
 		 // no MPI reduction is necessary, as they flows and volumes are already computed per open boundary in ExtBC::integrate
 		 for (int i = 0; i < extbc.size(); i ++) {
@@ -273,11 +273,25 @@ public:
 			inflowAccumulated+= extbc[i].inflowAccumulated;
 			outflowDischarge += extbc[i].outflowDischarge;
 			outflowAccumulated+= extbc[i].outflowAccumulated;
+
+			#if SERGHEI_SUSPENDED_SEDIMENT
+				inflowSolidDischarge += extbc[i].inflowSolidDischarge;
+				inflowSolidAccumulated+= extbc[i].inflowSolidAccumulated;
+				outflowSolidDischarge += extbc[i].outflowSolidDischarge;
+				outflowSolidAccumulated+= extbc[i].outflowSolidAccumulated;
+			#endif
+
 			#if SERGHEI_DEBUG_BOUNDARY
 				std::cout << GGD << GRAY << __PRETTY_FUNCTION__ << RESET << "\tBC " << i << "\tinflowDischarge = " << extbc[i].inflowDischarge << std::endl;
 				std::cout << GGD << GRAY << __PRETTY_FUNCTION__ << RESET << "\tinflowDischarge = " << inflowDischarge << std::endl;
-				std::cout << GGD << GRAY << __PRETTY_FUNCTION__ << RESET << "\tBC " << i << "\tinflowDischarge = " << extbc[i].outflowDischarge << std::endl;
+				std::cout << GGD << GRAY << __PRETTY_FUNCTION__ << RESET << "\tBC " << i << "\toutflowDischarge = " << extbc[i].outflowDischarge << std::endl;
 				std::cout << GGD << GRAY << __PRETTY_FUNCTION__ << RESET << "\toutflowDischarge = " << outflowDischarge << std::endl;
+				#if SERGHEI_SUSPENDED_SEDIMENT	
+					std::cout << GGD << GRAY << __PRETTY_FUNCTION__ << RESET << "\tBC " << i << "\tinflowSolidDischarge = " << extbc[i].inflowSolidDischarge << std::endl;
+					std::cout << GGD << GRAY << __PRETTY_FUNCTION__ << RESET << "\tinflowSolidDischarge = " << inflowSolidDischarge << std::endl;
+					std::cout << GGD << GRAY << __PRETTY_FUNCTION__ << RESET << "\tBC " << i << "\toutflowSolidDischarge = " << extbc[i].outflowSolidDischarge << std::endl;
+					std::cout << GGD << GRAY << __PRETTY_FUNCTION__ << RESET << "\toutSolidflowDischarge = " << outflowSolidDischarge << std::endl;		
+				#endif			
 			#endif
 		 }
 
@@ -291,6 +305,18 @@ public:
 			MPI_Allreduce(&outflowDischarge, &outflowDischargeG, 1, SERGHEI_MPI_REAL , MPI_SUM, MPI_COMM_WORLD);
 			MPI_Allreduce(&inflowAccumulated, &inflowAccumulatedG, 1, SERGHEI_MPI_REAL , MPI_SUM, MPI_COMM_WORLD);
 			MPI_Allreduce(&outflowAccumulated, &outflowAccumulatedG, 1, SERGHEI_MPI_REAL , MPI_SUM, MPI_COMM_WORLD);
+	
+			#if SERGHEI_SUSPENDED_SEDIMENT
+			inflowSolidDischargeG=0.0;
+			outflowSolidDischargeG=0.0;
+			inflowSolidAccumulatedG=0.0;
+			outflowSolidAccumulatedG=0.0;		
+			MPI_Allreduce(&inflowSolidDischarge, &inflowSolidDischargeG, 1, SERGHEI_MPI_REAL , MPI_SUM, MPI_COMM_WORLD);
+			MPI_Allreduce(&outflowSolidDischarge, &outflowSolidDischargeG, 1, SERGHEI_MPI_REAL , MPI_SUM, MPI_COMM_WORLD);
+			MPI_Allreduce(&inflowSolidAccumulated, &inflowSolidAccumulatedG, 1, SERGHEI_MPI_REAL , MPI_SUM, MPI_COMM_WORLD);
+			MPI_Allreduce(&outflowSolidAccumulated, &outflowSolidAccumulatedG, 1, SERGHEI_MPI_REAL , MPI_SUM, MPI_COMM_WORLD);
+			#endif
+
 			MPI_Barrier(MPI_COMM_WORLD);
 			dom.timers.swe.integrate.mpi += timer.seconds();
 		}

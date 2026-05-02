@@ -84,7 +84,7 @@ class SergheiTimers {
         ss_t ss;
         integrate_t integrate;
     };
-
+    
     #if SERGHEI_LPT || SERGHEI_LPT_RK || SERGHEI_LPT_RK_OFFLINE
     struct lpt_t {
         static constexpr unsigned short n = 3;
@@ -110,6 +110,24 @@ class SergheiTimers {
     };
     #endif
 
+    #if SERGHEI_SUSPENDED_SEDIMENT
+    struct st_t {
+        static constexpr unsigned short n = 3;
+        double total = 0.0;
+        double halo = 0.0;
+        double mpi = 0.0;
+    };
+    #endif
+
+    #if SERGHEI_SCALAR_TRANSPORT
+    struct ade_t {
+        static constexpr unsigned short n = 3;
+        double total = 0.0;
+        double halo = 0.0;
+        double mpi = 0.0;
+    };
+    #endif
+
 public:
     double total = 0.0;
     swe_t swe;
@@ -118,6 +136,12 @@ public:
     #endif
     #if SERGHEI_RE_MODEL
     re_t re;
+    #endif
+    #if SERGHEI_SCALAR_TRANSPORT
+    ade_t ade;
+    #endif
+    #if SERGHEI_SUSPENDED_SEDIMENT
+    st_t st;
     #endif
 
 private:
@@ -135,6 +159,7 @@ public:
     SergheiTimers() = default;
 
     void closure() {
+        swe.bc.total += swe.bc.integrate;
         swe.other = swe.solve - (swe.flux.total + swe.update.total + swe.wetdrycorr.total + swe.dt.total + 
                   swe.bc.total + swe.halo.total + swe.ss.raininf);
         swe.total = swe.solve + swe.init.total + swe.io.in + swe.io.out + 

@@ -42,7 +42,7 @@ class GwIntegrator	{
 	  		Kokkos::parallel_reduce(gdom.nCell , KOKKOS_LAMBDA (int idx, real &tmp) {
 	  			int ii, jj, kk, iGlob;
             	gdom.unpackIndices(idx, kk, jj, ii);
-            	iGlob = (hc+kk)*gdom.nxhc*gdom.nyhc + (hc+jj)*gdom.nxhc + ii + hc;
+            	iGlob = (gdom.hc+kk)*gdom.nxhc*gdom.nyhc + (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
             	tmp += gw.wc(iGlob,1) * gdom.dx * gdom.dx * gdom.dz(iGlob);
     		} , Kokkos::Sum<real>(Vtot) );
 			Kokkos::fence();
@@ -52,12 +52,11 @@ class GwIntegrator	{
 			// get surface-subsurface exchange rate [m3/s]
 			Vexch = 0;
 			#if SERGHEI_SWE_MODEL
-			// Always use qss_gw, which is populated in GwBC.h for both dxRatio=1 and dxRatio>1
 			Kokkos::parallel_reduce(gdom.ny*gdom.nx, KOKKOS_LAMBDA (int idx, real &tmp) {
-			        int ii, jj, iGlob;
-			        unpackIndicesUniformGrid(idx, gdom.ny, gdom.nx, jj, ii);
-			        iGlob = jj*gdom.nx + ii;
-			        tmp += gw.qss_gw(iGlob) * gdom.dx * gdom.dy;
+		        int ii, jj, iGlob;
+		        unpackIndicesUniformGrid(idx, gdom.ny, gdom.nx, jj, ii);
+		        iGlob = jj*gdom.nx + ii;
+		        tmp += gw.qss(iGlob) * gdom.dx * gdom.dx;
 			} , Kokkos::Sum<real>(Vexch) );
 			Kokkos::fence();
 			#endif

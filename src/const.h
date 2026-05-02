@@ -5,6 +5,9 @@
 
 #include <iostream>
 
+#define SERGHEI_OK 1
+#define SERGHEI_ERROR 0
+
 // Index for variables
 #define idH 0
 #define idHU 1
@@ -25,17 +28,19 @@
 // Some physical constants
 #define GRAV 9.81
 #define SQRTGRAV 3.132091953
-#define RHOW 998.0
 #define RHOA 1.225
 #define PI 3.14159
 
-// #define GRAV 9.807
-// #define SQRTGRAV 3.13161300291
+#define RHOW 1000.0
+#define RHOS 2650.0
+#define VISCMU 0.0012349 //Water dynamic viscosity (Pa*s) at 12oC
+#define VISCNU 0.0000012356 //Water kinematic viscosity (m2/s) at 12oC
 
 // Some tolerances
 #define TOL4 1e-4
 #define TOL5 1e-5
 #define TOL6 1e-6
+#define TOL6NEG -1e-6
 #define TOL8 1e-8
 #define TOL8NEG -1e-8
 #define TOL9 1e-9
@@ -92,8 +97,6 @@
 // PNETCDF parameters
 #define PNETCDF_N_INPUT_VARIABLES 9 // number of variables in an initial input file
 
-// halo cells (overlapping cells between domains for MPI)
-#define hc 1
 
 // program options
 #ifndef SERGHEI_DEBUG_PARALLEL_DECOMPOSITION
@@ -123,8 +126,36 @@
 #ifndef SERGHEI_DEBUG_MASS_CONS
 #define SERGHEI_DEBUG_MASS_CONS 0
 #endif
+#ifndef SERGHEI_DEBUG_SCALAR_TRANSPORT
+#define SERGHEI_DEBUG_SCALAR_TRANSPORT 0
+#endif
 #ifndef SERGHEI_VEGETATION_MODEL
 #define SERGHEI_VEGETATION_MODEL 0
+#endif
+#ifndef SERGHEI_EROSIVE_SHEAR
+#define SERGHEI_EROSIVE_SHEAR 0 //erosive shear forcing calculation
+#define SERGHEI_EROSIVE_SHEAR_FORMULATION 1 //mode for erosive shear forcing: 1->shear strees
+#endif
+#ifndef SERGHEI_SCALAR_TRANSPORT
+#define SERGHEI_SCALAR_TRANSPORT 0
+#endif
+#ifndef SERGHEI_SEDIMENT_TRANSPORT
+#define SERGHEI_SEDIMENT_TRANSPORT 0
+#endif
+#ifndef SERGHEI_UPWIND_BED
+#define SERGHEI_UPWIND_BED 0
+#endif
+#ifndef SERGHEI_SUSPENDED_SEDIMENT
+#define SERGHEI_SUSPENDED_SEDIMENT 0
+#endif
+#ifndef SERGHEI_BEDLOAD_SEDIMENT
+#define SERGHEI_BEDLOAD_SEDIMENT 0
+#endif
+#ifndef SERGHEI_SCALAR_DIFFUSION 
+#define SERGHEI_SCALAR_DIFFUSION 0
+#endif
+#ifndef SERGHEI_ANALYTICAL_DIFFUSION 
+#define SERGHEI_ANALYTICAL_DIFFUSION 0
 #endif
 #ifndef SERGHEI_DEBUG_MPI
 #define SERGHEI_DEBUG_MPI 0
@@ -134,6 +165,9 @@
 #endif
 #ifndef SERGHEI_DEBUG_INPUT_NETCDF
 #define SERGHEI_DEBUG_INPUT_NETCDF 0
+#endif
+#ifndef SERGHEI_DEBUG_RAINFALL
+#define SERGHEI_DEBUG_RAINFALL 0
 #endif
 #ifndef SERGHEI_LPT
 #define SERGHEI_LPT 0
@@ -155,6 +189,12 @@
 #endif
 #ifndef SERGHEI_VERTICAL_VELOCITY_Z
 #define SERGHEI_VERTICAL_VELOCITY_Z 0
+#endif
+#ifndef SERGHEI_DEBUG_SEDIMENT
+#define SERGHEI_DEBUG_SEDIMENT 0
+#endif
+#ifndef SERGHEI_SWE_DRY_RUNOFF_START_DT
+#define SERGHEI_SWE_DRY_RUNOFF_START_DT 0
 #endif
 
 //colors
@@ -179,6 +219,7 @@
 #define REXC RED << "[!] " << RESET
 #define RERROR RED << "[ERROR] " << RESET
 #define GGD GRAY << "[DEBUG] " << RESET
+#define NCERROR RED << "[NETCDF ERROR] " << RESET
 
 #define NO_DATA -999;
 

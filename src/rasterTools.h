@@ -61,7 +61,7 @@ int readRasterField(const std::string fNameIn, const Domain &dom, const Parallel
 		real tmp;
 		int flagnodata=0;
 
-		real *buffer = new real(dom.nCellGlobal);
+		//real *buffer = new real(dom.nCellGlobal);
 
     for (int ii=0; ii < dom.nCellGlobal; ii++) {
 	//	Kokkos::parallel_for("readRaster", Kokkos::Serial(),dom.nCellGlobal, KOKKOS_LAMBDA(int ii){

@@ -343,8 +343,7 @@ class ParticleTracker{
           CellsData = intArr("CellsData", dom.nCellGlobal-1);
           index=0;
           for(int ip=0;ip<dom.nCellGlobal;ip++){
-            unpackIndicesUniformGrid(ip, dom.ny, dom.nx, j, i);
-            int ii=(hc+j)*(dom.nx+2*hc)+hc+i;
+            int ii = dom.getIndex(ip);
             if(state.isnodata(ii)==0){
               CellsData(index)=ip;
               index++;
@@ -362,7 +361,7 @@ class ParticleTracker{
             unpackIndicesUniformGrid(r,dom.ny,dom.nx,j,i);
             particles(ip).x(_X) = (0.5+i)*dom.dx() + dom.extent[0](_X);
             particles(ip).x(_Y) = dom.extent[0](_Y) + dom.ny_glob*dom.dx() -(j+0.5)*dom.dx();
-            int ii=(hc+j)*(dom.nx+2*hc)+hc+i;
+            int ii=dom.getHaloExtension(i,j); 
             particles(ip).z = state.h(ii)+state.z(ii);
           });
           Kokkos::fence();
@@ -374,7 +373,7 @@ class ParticleTracker{
           index=0;
           for(int ip=0;ip<dom.nCellGlobal;ip++){
             unpackIndicesUniformGrid(ip, dom.ny, dom.nx, j, i);
-            int ii=(hc+j)*(dom.nx+2*hc)+hc+i;
+            int ii=dom.getHaloExtension(i,j); 
             if(state.isnodata(ii)==0){
               CellsData(index)=ip;
               index++;
@@ -536,8 +535,7 @@ class ParticleTracker{
           CellsData = intArr("CellsData", dom.nCellGlobal-1);
           index=0;
           for(int ip=0;ip<dom.nCellGlobal;ip++){
-            unpackIndicesUniformGrid(ip, dom.ny, dom.nx, j, i);
-            int ii=(hc+j)*(dom.nx+2*hc)+hc+i;
+            int ii = dom.getIndex(ip);
             if(state.isnodata(ii)==0){
               CellsData(index)=ip;
               index++;

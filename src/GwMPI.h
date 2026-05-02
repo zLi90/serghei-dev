@@ -30,7 +30,7 @@ public:
 
     inline void allocate(GwDomain &gdom) {
         int ii, jj, kk, nxhalo, nyhalo, idxS, idxN, idxW, idxE;
-        if (hc != 1)    {
+        if (gdom.hc != 1)    {
             std::cerr << RERROR "ERROR: hc must be 1 for subsurface halo exchange!" << std::endl;
         }
         nBufS = gdom.nx*gdom.nz;
@@ -53,10 +53,10 @@ public:
         idxBufW = intArr("idxBufW",nBufW);
         idxBufE = intArr("idxBufE",nBufE);
         // calculate buffer index
-        nxhalo = gdom.nx+2*hc;    nyhalo = gdom.ny+2*hc;
+        nxhalo = gdom.nx+2*gdom.hc;    nyhalo = gdom.ny+2*gdom.hc;
         idxW = 0;   idxE = 0;   idxS = 0;   idxN = 0;
         for (int iGlob = 0; iGlob < gdom.nCellMem; iGlob++)  {
-            gdom.unpackIndicesGw(iGlob, gdom.nz+2*hc, gdom.ny+2*hc, gdom.nx+2*hc, kk, jj, ii);
+            gdom.unpackIndicesGw(iGlob, gdom.nz+2*gdom.hc, gdom.ny+2*gdom.hc, gdom.nx+2*gdom.hc, kk, jj, ii);
             if (ii == 0)    {
                 if (jj > 0 & jj < gdom.ny+1 & kk > 0 & kk < gdom.nz+1)    {idxBufW(idxW) = iGlob;  idxW += 1;}
             }
@@ -75,7 +75,7 @@ public:
 
     // Top level MPI exchange functions for realArr2
     inline void mpi_sendrecv(realArr2 var, GwDomain &gdom, Parallel &par){
-        int ierr, nx = gdom.nx+2*hc;
+        int ierr, nx = gdom.nx+2*gdom.hc;
         Kokkos::Timer timer;	// only to keep track of time
         // x direction
         if (par.nproc_x > 1) {
@@ -97,7 +97,7 @@ public:
     }
 
     inline void mpi_sendrecv1(realArr var, GwDomain &gdom, Parallel &par){
-        int ierr, nx = gdom.nx+2*hc;
+        int ierr, nx = gdom.nx+2*gdom.hc;
         Kokkos::Timer timer;	// only to keep track of time
         // x direction
         if (par.nproc_x > 1) {

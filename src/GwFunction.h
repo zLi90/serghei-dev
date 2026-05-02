@@ -57,7 +57,7 @@ public:
         Kokkos::parallel_for(gdom.nCell, KOKKOS_LAMBDA(int idom) {
             int ii, jj, kk, iGlob;
             gdom.unpackIndices(idom, kk, jj, ii);
-            iGlob = (hc+kk)*gdom.nxhc*gdom.nyhc + (hc+jj)*gdom.nxhc + ii + hc;
+            iGlob = (gdom.hc+kk)*gdom.nxhc*gdom.nyhc + (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
             gw.h(iGlob,1) = A.x(idom);
         });
 
@@ -141,7 +141,7 @@ public:
             Kokkos::parallel_for(gdom.nCell, KOKKOS_LAMBDA(int idom) {
                 int ii, jj, kk, iGlob;
                 gdom.unpackIndices(idom, kk, jj, ii);
-                iGlob = (hc+kk)*gdom.nxhc*gdom.nyhc + (hc+jj)*gdom.nxhc + ii + hc;
+                iGlob = (gdom.hc+kk)*gdom.nxhc*gdom.nyhc + (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
                 gw.h(iGlob,0) = gw.h(iGlob,1);
                 gw.h(iGlob,1) = A.x(idom);
             });
@@ -218,7 +218,7 @@ public:
             int ii, jj, kk, iGlob, ivg, ivgx, ivgy, ivgz, ivgback;
             real ks, ksx, ksy, ksz, ksback;
             gdom.unpackIndices(idom, kk, jj, ii);
-            iGlob = (hc+kk)*gdom.nxhc*gdom.nyhc + (hc+jj)*gdom.nxhc + ii + hc;
+            iGlob = (gdom.hc+kk)*gdom.nxhc*gdom.nyhc + (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
             ivg = gw.soilID(iGlob) * NVG;                       ks = gw.vgTable(ivg);
             ivgx = gw.soilID(iGlob+1) * NVG;                    ksx = gw.vgTable(ivgx);
             ivgy = gw.soilID(iGlob+gdom.nxhc) * NVG;            ksy = gw.vgTable(ivgy);
@@ -308,7 +308,7 @@ public:
         Kokkos::parallel_for( gdom.nCell , KOKKOS_LAMBDA(int idom) {
             int ii, jj, kk, iGlob;
             gdom.unpackIndices(idom, kk, jj, ii);
-            iGlob = (hc+kk)*gdom.nxhc*gdom.nyhc + (hc+jj)*gdom.nxhc + ii + hc;
+            iGlob = (gdom.hc+kk)*gdom.nxhc*gdom.nyhc + (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
             gw.q(iGlob,0) = gw.k(iGlob,0) * gdom.cosx(iGlob) * (gw.h(iGlob+1,1) - gw.h(iGlob,1)) / gdom.dx
                 + gw.k(iGlob,0) * gdom.sinx(iGlob);
             gw.q(iGlob,1) = gw.k(iGlob,1) * gdom.cosy(iGlob) * (gw.h(iGlob+gdom.nxhc,1) - gw.h(iGlob,1)) / gdom.dy
@@ -346,8 +346,8 @@ public:
             int ii, jj, kk, ivg, iGlob, iGlobSW;
             real wcs, wcr, wcm, n, m, alpha, nume, deno, ch = 0.0, ss = 1e-5;
             gdom.unpackIndices(idom, kk, jj, ii);
-            iGlob = (hc+kk)*gdom.nxhc*gdom.nyhc + (hc+jj)*gdom.nxhc + ii + hc;
-            iGlobSW = (hc+jj)*gdom.nxhc + ii + hc;
+            iGlob = (gdom.hc+kk)*gdom.nxhc*gdom.nyhc + (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
+            iGlobSW = (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
             ivg = gw.soilID(iGlob) * NVG;
             wcs = gw.vgTable(ivg+2);     wcr = gw.vgTable(ivg+3);
             n = gw.vgTable(ivg+4);       alpha = gw.vgTable(ivg+6);
@@ -394,7 +394,7 @@ public:
         Kokkos::parallel_for( gdom.nCell , KOKKOS_LAMBDA(int idom) {
             int ii, jj, kk, iGlob;
             gdom.unpackIndices(idom, kk, jj, ii);
-            iGlob = (hc+kk)*gdom.nxhc*gdom.nyhc + (hc+jj)*gdom.nxhc + ii + hc;
+            iGlob = (gdom.hc+kk)*gdom.nxhc*gdom.nyhc + (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
             // no data cells 
             if (gdom.isnodata(iGlob) == 1)  {
             	gw.coef(idom,0) = 1e12; gw.coef(idom,7) = 1e12; gw.coef(idom,5) = 0.0;	gw.coef(idom,6) = 0.0;
@@ -417,7 +417,7 @@ public:
         Kokkos::parallel_for( gdom.nCell , KOKKOS_LAMBDA(int idom) {
             int ii, jj, kk, iGlob, irow = A.ptr(idom);
 			gdom.unpackIndices(idom, kk, jj, ii);
-			iGlob = (hc+kk)*gdom.nxhc*gdom.nyhc + (hc+jj)*gdom.nxhc + ii + hc;
+			iGlob = (gdom.hc+kk)*gdom.nxhc*gdom.nyhc + (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
         	if (kk > 0)	{A.ind(irow) = idom - gdom.nx*gdom.ny;	A.val(irow) = gw.coef(idom,6);  irow++;}
         	if (jj > 0)	{
         		A.ind(irow) = idom - gdom.nx;	        A.val(irow) = gw.coef(idom,4);  irow++;
@@ -451,8 +451,8 @@ public:
                 int ii, jj, kk, iGlob, ivg, iGlobSW;
                 real coef, qqx, qqy, qqz, wcs, ss = 1e-5;
                 gdom.unpackIndices(idom, kk, jj, ii);
-                iGlob = (hc+kk)*gdom.nxhc*gdom.nyhc + (hc+jj)*gdom.nxhc + ii + hc;
-				iGlobSW = (hc+jj)*gdom.nxhc + ii + hc;
+                iGlob = (gdom.hc+kk)*gdom.nxhc*gdom.nyhc + (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
+				iGlobSW = (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
                 ivg = gw.soilID(iGlob) * NVG;
                 wcs = gw.vgTable(ivg+2);
                 coef = 1.0 + ss*(gw.h(iGlob,1) - gw.h(iGlob,0)) / wcs;
@@ -478,8 +478,8 @@ public:
                 int ii, jj, kk, iGlob, iGlobSW, ivg, flag;
         		real wcs, wcr, wcm, n, m, alpha, sbar;
                 gdom.unpackIndices(idom, kk, jj, ii);
-                iGlob = (hc+kk)*gdom.nxhc*gdom.nyhc + (hc+jj)*gdom.nxhc + ii + hc;
-                iGlobSW = (hc+jj)*gdom.nxhc + ii + hc;
+                iGlob = (gdom.hc+kk)*gdom.nxhc*gdom.nyhc + (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
+                iGlobSW = (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
                 ivg = gw.soilID(iGlob) * NVG;
                 wcs = gw.vgTable(ivg+2);     wcr = gw.vgTable(ivg+3);
                 n = gw.vgTable(ivg+4);       alpha = gw.vgTable(ivg+6);
@@ -536,7 +536,7 @@ public:
                 int ii, jj, kk, iGlob, ivg, flag;
         		real wcs, wcr, wcm, n, m, alpha, sbar;
                 gdom.unpackIndices(idom, kk, jj, ii);
-                iGlob = (hc+kk)*gdom.nxhc*gdom.nyhc + (hc+jj)*gdom.nxhc + ii + hc;
+                iGlob = (gdom.hc+kk)*gdom.nxhc*gdom.nyhc + (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
                 ivg = gw.soilID(iGlob) * NVG;
                 wcs = gw.vgTable(ivg+2);     wcr = gw.vgTable(ivg+3);
                 n = gw.vgTable(ivg+4);       alpha = gw.vgTable(ivg+6);
@@ -569,7 +569,7 @@ public:
             int ii, jj, kk, iGlob;
             gdom.unpackIndices(idx, kk, jj, ii);
             // gdom.unpackIndicesGw(idx, gdom.nz, gdom.ny, gdom.nx, kk, jj, ii);
-            iGlob = (hc+kk)*gdom.nxhc*gdom.nyhc + (hc+jj)*gdom.nxhc + ii + hc;
+            iGlob = (gdom.hc+kk)*gdom.nxhc*gdom.nyhc + (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
             real dwc = myfabs(gw.wc(iGlob,1) - gw.wc(iGlob,0));
 			tmp = (dwc > tmp) ? dwc : tmp;
 		} , Kokkos::Max<real>(dwc_max) );

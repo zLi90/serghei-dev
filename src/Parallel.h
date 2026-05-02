@@ -29,10 +29,8 @@ public:
 
 inline void printKokkosInitArguments(Parallel const &par){
   std::cout << "MPI Rank " << par.myrank << "\tnum_threads " << Kokkos::num_threads() << std::endl;
-  #if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL)
   std::cout << "MPI Rank " << par.myrank << "\tdevice_id " << Kokkos::device_id() << std::endl;
-  #endif
-  // Note: Kokkos::num_devices() was removed in newer Kokkos versions
+  std::cout << "MPI Rank " << par.myrank << "\tndevices " << Kokkos::num_devices() << std::endl;
   //std::cout << "MPI Rank " << par.myrank << "\tskip_device " << Kokkos::skip_device() << std::endl;
 }
 

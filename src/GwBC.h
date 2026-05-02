@@ -57,7 +57,7 @@ public:
 		for (int kk = 0; kk < gdom.nz; kk++) {
 			for (int jj = 0; jj < gdom.ny; jj++) {
 				for (int ii = 0; ii < gdom.nx; ii++) {
-					int iGlob = (hc+kk)*gdom.nxhc*gdom.nyhc + (hc+jj)*gdom.nxhc + ii + hc;
+					int iGlob = (gdom.hc+kk)*gdom.nxhc*gdom.nyhc + (gdom.hc+jj)*gdom.nxhc + ii + gdom.hc;
 					foundInSubdom = -1;
 		            real xCoord = gdom.xll + ( par.i_beg + ii + 0.5) * gdom.dx;
 		            real yCoord = gdom.yll + gdom.ny_glob*gdom.dx - ( par.j_beg + jj + 0.5) * gdom.dx;
@@ -271,23 +271,10 @@ public:
 					Kokkos::parallel_for("gw_bc_swe", ncellsBC, KOKKOS_CLASS_LAMBDA (int ibc){
 	                    int iGlob = bcells[ibc], iGhost = gcells[ibc], ivg = gw.soilID(iGlob) * NVG;
 	                    real ks = gw.vgTable(ivg);
-						int ii, jj, kk;
+						int ii, jj, kk, iGlobSW;
 						gdom.unpackIndicesHalo(iGlob, kk, jj, ii);
-						// Get index for hs lookup
-						int iGlobGW;
-						if (gdom.dxRatio == 1) {
-							// Same resolution: gw.hs uses same 2D indexing as state.h
-							// state.h indexing: (j+hc)*(nx+2*hc) + (i+hc)
-							// When dxRatio=1, gdom.nx == dom.nx, so use same indexing
-							iGlobGW = (jj) * gdom.nxhc + (ii);  // 2D indexing for surface field
-						} else {
-							// Multi-resolution: gw.hs is stored using 3D subsurface halo indexing
-							// iGlob is already a halo index, so we can use it directly
-							// In serghei.h, we store using getHaloExtension(ii, jj, kk) where ii, jj, kk are physical indices
-							// Here, iGlob is already the halo index, so we use it directly
-							iGlobGW = iGlob;
-						}
-						gw.h(iGhost,1) = gw.hs(iGlobGW);
+						iGlobSW = jj*gdom.nxhc + ii;
+						gw.h(iGhost,1) = gw.hs(iGlobSW);
 						// get sw-gw exchange type
 						if (gw.h(iGhost,1) > 0.0)    {
 							real q_infilt = 2.0 * ks * (gw.h(iGlob,1) - gw.h(iGhost,1)) / gdom.dz(iGlob) - ks;
@@ -409,44 +396,31 @@ public:
                 case SUB_BC_SWE:
 					#if SERGHEI_SWE_MODEL
 					if (direction == 6)	{
-						// Coarse-resolution approach for all dxRatio values
-						// Uses area-weighted averaged surface depth (gw.hs) for physically consistent exchange
-						// The same qss is applied uniformly within each subsurface cell footprint
 						Kokkos::parallel_for("gw_swe_fd", ncellsBC, KOKKOS_CLASS_LAMBDA (int ibc){
-	                        int ii, jj, kk, iGlob = bcells[ibc], iGhost = gcells[ibc], ivg = gw.soilID(iGlob) * NVG;
+	                        int ii, jj, kk, iGlobSW, iGlob = bcells[ibc], iGhost = gcells[ibc], ivg = gw.soilID(iGlob) * NVG;
 	                        gdom.unpackIndicesHalo(iGlob, kk, jj, ii);
-	                        // Convert subsurface indices to surface indices for qss storage
-	                        // Note: ii, jj are subsurface halo indices, need to convert to surface
-	                        int i_gw = ii - hc;  // Remove halo offset
-	                        int j_gw = jj - hc;
-	                        int iGlobGW = j_gw * gdom.nx + i_gw;  // Subsurface cell index (without halo)
-	                        if (gdom.isnodata(iGlob) == 0)  {
-	    						if (swgw_type(ibc) == 0)    {
-	    							gw.q(iGhost,2) = 0.0;
-	    						}
-	    						else if (swgw_type(ibc) == 2)   {
-	    							// Ponding: limit infiltration to available surface water
-	    							gw.q(iGhost,2) = -gw.h(iGhost,1) / gdom.dt;
-	    						}
-	    						else {
-	    							// Normal exchange using Darcy's law
-	    							// gw.h(iGhost,1) = area-weighted averaged surface depth (set in applyHBC)
-	    							// gw.h(iGlob,1) = subsurface pressure head at top layer
-	    							gw.q(iGhost,2) = 2.0 * gw.k(iGhost,2) * (gw.h(iGlob,1) - gw.h(iGhost,1)) / gdom.dz(iGlob) - gw.k(iGhost,2);
-	    						}
-	                        }
-	                        else {gw.q(iGhost,2) = 0.0;}
-							// Store exchange flux per subsurface cell
-							if (iGlobGW >= 0 && iGlobGW < gdom.nCell) {
-								gw.qss_gw(iGlobGW) = gw.q(iGhost,2);
-							}
+	                        iGlobSW = (jj-1)*gdom.nx + ii - 1;
+	                        real wcs = gw.vgTable(ivg+2);
+                            if (gdom.isnodata(iGlob) == 0)  {
+    							if (swgw_type(ibc) == 0)    {
+    								gw.q(iGhost,2) = 0.0;
+    							}
+    							else if (swgw_type(ibc) == 2)   {
+    								gw.q(iGhost,2) = -gw.h(iGhost,1) / gdom.dt;
+    							}
+    							else {
+    								gw.q(iGhost,2) = 2.0 * gw.k(iGhost,2) * (gw.h(iGlob,1) - gw.h(iGhost,1)) / gdom.dz(iGlob) - gw.k(iGhost,2);
+    							}
+                            }
+                            else {gw.q(iGhost,2) = 0.0;}
+							// Get exchange flux
+							gw.qss(iGlobSW) = gw.q(iGhost,2);
 	                    });
 					}
 					else {
 						if (par.masterproc)	{std::cerr << RERROR "BC direction must be 6 for SW-GW exchange boundary! " << "\n";}
 					}
 					#endif
-					break;
                 case SUB_BC_Q_CONST:
 					Kokkos::parallel_for("gw_bc_q_const", ncellsBC, KOKKOS_CLASS_LAMBDA (int ibc){
 						int ii, jj, kk, iGlobSW, iGlob = bcells[ibc], iGhost = gcells[ibc];
@@ -589,7 +563,7 @@ public:
                     Kokkos::parallel_for("gw_bc_h_const", ncellsBC, KOKKOS_CLASS_LAMBDA (int ibc){
                         int ii, jj, kk, idom, iGlobSW, iGlob = bcells[ibc], iGhost = gcells[ibc];
                         gdom.unpackIndicesHalo(iGlob, kk, jj, ii);
-                        idom = (kk-hc)*gdom.nx*gdom.ny + (jj-hc)*gdom.nx + ii - hc;
+                        idom = (kk-gdom.hc)*gdom.nx*gdom.ny + (jj-gdom.hc)*gdom.nx + ii - gdom.hc;
 						iGlobSW = jj*gdom.nxhc + ii;
 						if (direction == 1)	{
 							gw.coef(idom,1) = gw.coef(idom,1) * 2.0;
@@ -626,7 +600,7 @@ public:
 						Kokkos::parallel_for("gw_bc_swe_const", ncellsBC, KOKKOS_CLASS_LAMBDA (int ibc){
 	                        int ii, jj, kk, idom, iGlobSW, iGlob = bcells[ibc];
 	                        gdom.unpackIndicesHalo(iGlob, kk, jj, ii);
-	                        idom = (kk-hc)*gdom.nx*gdom.ny + (jj-hc)*gdom.nx + ii - hc;
+	                        idom = (kk-gdom.hc)*gdom.nx*gdom.ny + (jj-gdom.hc)*gdom.nx + ii - gdom.hc;
 							iGlobSW = jj*gdom.nxhc + ii;
 							if (swgw_type(ibc) == 2)    {
 								real q_infilt = gw.h(iGlob-gdom.nxhc*gdom.nyhc,1) / gdom.dt;
@@ -657,7 +631,7 @@ public:
 					Kokkos::parallel_for("gw_bc_q", ncellsBC, KOKKOS_CLASS_LAMBDA (int ibc){
 						int ii, jj, kk, idom, iGlobSW, iGlob = bcells[ibc];
 						gdom.unpackIndicesHalo(iGlob, kk, jj, ii);
-						idom = (kk-hc)*gdom.nx*gdom.ny + (jj-hc)*gdom.nx + ii - hc;
+						idom = (kk-gdom.hc)*gdom.nx*gdom.ny + (jj-gdom.hc)*gdom.nx + ii - gdom.hc;
 						iGlobSW = jj*gdom.nxhc + ii;
 						if (direction == 1)	{
 							gw.coef(idom,7) += gdom.dt * bcvals(ibc) / gdom.dx;
@@ -698,7 +672,7 @@ public:
 					// for (int ibc = 0; ibc < ncellsBC; ibc++)	{
                         int ii, jj, kk, idom, iGlobSW, iGlob = bcells[ibc];
                         gdom.unpackIndicesHalo(iGlob, kk, jj, ii);
-                        idom = (kk-hc)*gdom.nx*gdom.ny + (jj-hc)*gdom.nx + ii - hc;
+                        idom = (kk-gdom.hc)*gdom.nx*gdom.ny + (jj-gdom.hc)*gdom.nx + ii - gdom.hc;
 						iGlobSW = jj*gdom.nxhc + ii;
 						if (direction == 1)	{
 							gw.coef(idom,7) += gdom.dt * qbc / gdom.dx;
